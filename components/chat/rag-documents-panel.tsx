@@ -29,10 +29,21 @@ function formatBytes(bytes: number) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function statusDotClass(status: RagDocument["status"]) {
+  if (status === "ready") {
+    return "bg-emerald-500";
+  }
+  if (status === "processing") {
+    return "bg-amber-400";
+  }
+  return "bg-muted-foreground/40";
+}
+
 export function RagDocumentsPanel() {
   const inputRef = useRef<HTMLInputElement>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   const { data, mutate } = useSWR<{ documents: RagDocument[] }>(
     `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/api/rag-documents`,
@@ -113,6 +124,37 @@ export function RagDocumentsPanel() {
     [uploadFile]
   );
 
+  const deleteDocuments = useCallback(
+    async (mode: "single" | "failed" | "all", id?: string) => {
+      setIsDeleting(true);
+      try {
+        const response = await fetch(
+          `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/api/rag-documents`,
+          {
+            method: "DELETE",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ mode, id }),
+          }
+        );
+
+        if (!response.ok) {
+          const payload = (await response.json().catch(() => null)) as
+            | { error?: string }
+            | null;
+          throw new Error(payload?.error ?? "Delete failed");
+        }
+
+        await mutate();
+        toast.success("Document(s) deleted");
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "Failed to delete");
+      } finally {
+        setIsDeleting(false);
+      }
+    },
+    [mutate]
+  );
+
   return (
     <div className="absolute inset-0 z-30 bg-background">
       <div className="mx-auto flex h-full w-full max-w-5xl flex-col gap-6 px-4 py-6 md:px-8">
@@ -155,7 +197,7 @@ export function RagDocumentsPanel() {
               Drag and drop files here, or click to upload
             </p>
             <p className="text-xs text-muted-foreground">
-              Supports .pdf, .xls, .xlsx, .txt, .md, .csv, .json up to 5MB
+              Supports .pdf, .xls, .xlsx, .txt, .md, .csv, .json up to 50MB
             </p>
           </div>
           <input
@@ -178,12 +220,41 @@ export function RagDocumentsPanel() {
             Uploaded documents ({documents.length})
           </h2>
           <Button
-            disabled={isUploading}
+            disabled={isUploading || isDeleting}
             onClick={() => inputRef.current?.click()}
             size="sm"
             variant="outline"
           >
             {isUploading ? "Uploading..." : "Upload files"}
+          </Button>
+        </div>
+
+        <div className="flex items-center justify-end gap-2">
+          <Button
+            disabled={isDeleting || documents.length === 0}
+            onClick={() => {
+              if (window.confirm("Delete all uploaded RAG documents?")) {
+                void deleteDocuments("all");
+              }
+            }}
+            size="sm"
+            variant="outline"
+          >
+            Delete all
+          </Button>
+          <Button
+            disabled={
+              isDeleting || !documents.some((document) => document.status === "failed")
+            }
+            onClick={() => {
+              if (window.confirm("Delete all failed RAG documents?")) {
+                void deleteDocuments("failed");
+              }
+            }}
+            size="sm"
+            variant="outline"
+          >
+            Delete failed
           </Button>
         </div>
 
@@ -202,12 +273,35 @@ export function RagDocumentsPanel() {
                       <p className="truncate text-sm font-medium">{doc.title}</p>
                     </div>
                     <p className="mt-1 text-xs text-muted-foreground">
-                      {doc.status} • {doc.chunkCount} chunks • {formatBytes(doc.size)} • {new Date(doc.createdAt).toLocaleString()}
+                      <span className="inline-flex items-center gap-1.5">
+                        <span
+                          aria-hidden="true"
+                          className={cn(
+                            "inline-block size-1.5 rounded-full",
+                            statusDotClass(doc.status)
+                          )}
+                        />
+                        {doc.status}
+                      </span>{" "}
+                      • {doc.chunkCount} chunks • {formatBytes(doc.size)} •{" "}
+                      {new Date(doc.createdAt).toLocaleString()}
                     </p>
                     {doc.error ? (
                       <p className="mt-1 text-xs text-destructive">{doc.error}</p>
                     ) : null}
                   </div>
+                  <Button
+                    disabled={isDeleting}
+                    onClick={() => {
+                      if (window.confirm(`Delete "${doc.title}"?`)) {
+                        void deleteDocuments("single", doc.id);
+                      }
+                    }}
+                    size="sm"
+                    variant="outline"
+                  >
+                    Delete
+                  </Button>
                 </div>
               ))}
             </div>
