@@ -175,9 +175,24 @@ export function ActiveChatProvider({ children }: { children: ReactNode }) {
     }
 
     if (chatData?.messages) {
-      setMessages(chatData.messages);
+      setMessages((currentMessages) => {
+        // Do not clobber optimistic/in-flight UI messages while the model is running.
+        if (status === "submitted" || status === "streaming") {
+          return currentMessages;
+        }
+
+        // Keep current state if fetched history is clearly older/partial.
+        if (
+          currentMessages.length > 0 &&
+          chatData.messages.length < currentMessages.length
+        ) {
+          return currentMessages;
+        }
+
+        return chatData.messages;
+      });
     }
-  }, [chatId, chatData?.messages, isNewChat, setMessages]);
+  }, [chatId, chatData?.messages, isNewChat, setMessages, status]);
 
   const prevChatIdRef = useRef(chatId);
   useEffect(() => {
