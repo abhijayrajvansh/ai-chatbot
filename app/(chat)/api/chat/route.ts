@@ -224,13 +224,30 @@ export async function POST(request: Request) {
     const stream = createUIMessageStream({
       originalMessages: messages ? (uiMessages as ChatMessage[]) : undefined,
       execute: async ({ writer: dataStream }) => {
-        const response = await model.invoke(modelMessages);
-        const text = extractTextFromLangChainMessage(response);
-
         const textId = generateUUID();
         dataStream.write({ type: "text-start", id: textId });
-        dataStream.write({ type: "text-delta", id: textId, delta: text });
-        dataStream.write({ type: "text-end", id: textId });
+
+        try {
+          const responseStream = await model.stream(modelMessages);
+
+          for await (const chunk of responseStream) {
+            const delta = extractTextFromLangChainMessage(chunk);
+            if (!delta) {
+              continue;
+            }
+
+            dataStream.write({ type: "text-delta", id: textId, delta });
+          }
+        } catch (_) {
+          // Fallback for providers/configurations that do not support streaming.
+          const response = await model.invoke(modelMessages);
+          const text = extractTextFromLangChainMessage(response);
+          if (text) {
+            dataStream.write({ type: "text-delta", id: textId, delta: text });
+          }
+        } finally {
+          dataStream.write({ type: "text-end", id: textId });
+        }
 
         if (titlePromise) {
           try {
