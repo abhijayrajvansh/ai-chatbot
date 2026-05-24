@@ -58,7 +58,7 @@ async function extractTextFromPdf(buffer: Buffer) {
       }
     }
 
-    return pages.join("\n\n").trim();
+    return pages;
   } finally {
     await pdf.destroy();
   }
@@ -96,7 +96,8 @@ export async function extractTextFromRagBuffer({
   mimeType: string;
 }) {
   if (mimeType === "application/pdf") {
-    return extractTextFromPdf(buffer);
+    const pages = await extractTextFromPdf(buffer);
+    return pages.join("\n\n").trim();
   }
 
   if (
@@ -142,7 +143,40 @@ export async function ingestRagDocument({
     throw new Error("The uploaded file has no readable text");
   }
 
-  const chunks = chunkText(text);
+  const chunks =
+    mimeType === "application/pdf"
+      ? await (async () => {
+          const pages = await extractTextFromPdf(fileBuffer);
+          const pageChunks: Array<{
+            chunkIndex: number;
+            content: string;
+            pageNumber: number;
+          }> = [];
+
+          let chunkIndex = 0;
+          for (let pageIndex = 0; pageIndex < pages.length; pageIndex += 1) {
+            const pageText = pages[pageIndex]?.trim();
+            if (!pageText) {
+              continue;
+            }
+
+            const splitChunks = chunkText(pageText);
+            for (const splitChunk of splitChunks) {
+              pageChunks.push({
+                chunkIndex,
+                content: splitChunk.content,
+                pageNumber: pageIndex + 1,
+              });
+              chunkIndex += 1;
+            }
+          }
+
+          return pageChunks;
+        })()
+      : chunkText(text).map((chunk) => ({
+          chunkIndex: chunk.chunkIndex,
+          content: chunk.content,
+        }));
 
   if (chunks.length === 0) {
     throw new Error("Could not chunk the uploaded text");

@@ -74,7 +74,7 @@ export const systemPrompt = ({
 }) => {
   const requestPrompt = getRequestPromptFromHints(requestHints);
   const contextPrompt = retrievedContext?.trim()
-    ? `\n\nRelevant user documents:\n${retrievedContext}`
+    ? `\n\nRelevant user documents:\n${retrievedContext}\n\nWhen you use these documents, include a final \"Sources\" section and cite each used source as:\n- <document file/title>, page <n> (if page exists)\nIf page is not available, cite:\n- <document file/title>, chunk <n>`
     : "";
 
   if (!supportsTools) {

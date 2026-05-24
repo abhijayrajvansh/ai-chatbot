@@ -7,6 +7,7 @@ export type VectorChunkMetadata = {
   documentTitle: string;
   documentKind: string;
   chunkIndex: number;
+  pageNumber?: number;
 };
 
 function getEmbeddingModel() {
@@ -57,7 +58,7 @@ export async function upsertDocumentChunksToVectorStore({
   documentId: string;
   documentTitle: string;
   documentKind: string;
-  chunks: Array<{ chunkIndex: number; content: string }>;
+  chunks: Array<{ chunkIndex: number; content: string; pageNumber?: number }>;
 }) {
   const index = getVectorIndex();
   const embeddings = getEmbeddingModel();
@@ -78,6 +79,7 @@ export async function upsertDocumentChunksToVectorStore({
         documentTitle,
         documentKind,
         chunkIndex: chunk.chunkIndex,
+        pageNumber: chunk.pageNumber,
       },
       data: chunk.content,
     }))
@@ -126,7 +128,25 @@ export async function queryDocumentChunksFromVectorStore({
       documentTitle: result.metadata?.documentTitle ?? "",
       documentKind: result.metadata?.documentKind ?? "text",
       chunkIndex: result.metadata?.chunkIndex ?? 0,
+      pageNumber: result.metadata?.pageNumber,
       content: typeof result.data === "string" ? result.data : "",
     }))
     .filter((chunk) => Boolean(chunk.documentId) && Boolean(chunk.content));
+}
+
+export async function deleteDocumentChunksFromVectorStore({
+  userId,
+  documentId,
+}: {
+  userId: string;
+  documentId: string;
+}) {
+  const index = getVectorIndex();
+  if (!index) {
+    return;
+  }
+
+  await index.delete({
+    prefix: `${userId}:${documentId}:`,
+  });
 }

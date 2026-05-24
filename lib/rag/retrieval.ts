@@ -8,6 +8,7 @@ export type RetrievedContextChunk = {
   documentTitle: string;
   documentKind: string;
   chunkIndex: number;
+  pageNumber?: number;
   content: string;
 };
 
@@ -72,6 +73,7 @@ export async function getRelevantContextForUser({
         documentTitle: chunk.documentTitle,
         documentKind: chunk.documentKind,
         chunkIndex: chunk.chunkIndex,
+        pageNumber: undefined,
         content: chunk.content,
         score,
       };
@@ -94,7 +96,11 @@ export function formatRetrievedContext(
   const sections: string[] = [];
 
   for (const chunk of chunks) {
-    const block = `Document: ${chunk.documentTitle}\nKind: ${chunk.documentKind}\nChunk: ${chunk.chunkIndex + 1}\nContent:\n${chunk.content}`;
+    const pageLine =
+      chunk.pageNumber && Number.isFinite(chunk.pageNumber)
+        ? `Page: ${chunk.pageNumber}\n`
+        : "";
+    const block = `Document: ${chunk.documentTitle}\nKind: ${chunk.documentKind}\nChunk: ${chunk.chunkIndex + 1}\n${pageLine}Content:\n${chunk.content}`;
     total += block.length;
     if (total > maxLength) {
       break;
