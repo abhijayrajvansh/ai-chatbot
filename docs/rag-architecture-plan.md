@@ -1,290 +1,140 @@
-# RAG Architecture Plan (Firebase Storage + Queue + LangChain + Upstash Vector)
+# RAG Architecture (Current Implementation)
 
-## 1) Why uploads are failing right now
+This document explains the RAG pipeline that is currently implemented in this repo.
 
-Current failure:
-- `Setting up fake worker failed... pdf.worker.mjs not found` when uploading PDF.
+## Goal
 
-Root cause:
-- The current ingestion uses `pdf-parse` in the Next.js route runtime.
-- `pdf-parse` (v2+) relies on `pdfjs-dist` worker assets that Turbopack/Next server chunks are not reliably bundling in this setup.
-- This is a runtime/tooling mismatch, not a RAG logic issue.
+Turn uploaded user files into searchable knowledge, then use that knowledge to answer chat questions.
 
-Impact:
-- PDF text extraction fails before chunking/embedding.
-- Upload endpoint returns `500`, and the client reports `Failed to process request`.
+## Stack Used
 
----
+- Storage: Firebase Storage
+- Metadata/status: Firestore (`rag_documents`)
+- Queue: Upstash Redis REST (preferred), with optional TCP Redis fallback
+- Chunk embeddings: OpenAI embeddings via LangChain `OpenAIEmbeddings`
+- Vector DB: Upstash Vector
+- Chat retrieval path: Next.js API route + RAG context injection
 
-## 2) Target RAG behavior (product contract)
+## End-to-End Flow
 
-For each user:
-1. User uploads document(s): PDF, DOCX/TXT/MD/CSV/XLS/XLSX/JSON.
-2. File is stored in Firebase Storage.
-3. Upload API writes a queued ingestion job in Redis and marks Firestore status as `queued`.
-4. Worker dequeues jobs and extracts clean text per document.
-5. Worker chunks text with stable chunk IDs.
-6. Worker embeds chunks with configured embedding model.
-7. Worker upserts embeddings + metadata to Upstash Vector.
-8. Worker marks Firestore status `ready` (or `failed` with error code).
-9. User asks a chat question.
-10. System embeds query, retrieves user-scoped chunks, builds context, and calls chat model.
-11. System returns answer plus citations/chunk sources.
+### 1) User uploads a document
 
----
+Route: `POST /api/rag-documents`
 
-## 3) Recommended technical design
+What happens:
+1. Validate file type and size.
+2. Compute checksum for deduplication.
+3. If same checksum already exists and is `ready`, return existing doc.
+4. Save a Firestore `rag_documents` record with `status=queued`.
+5. Upload original file to Firebase Storage (`storagePath` saved in Firestore).
+6. Push an ingest job to Redis queue.
 
-### 3.1 Storage model
+If queue is unavailable:
+- API falls back to inline ingest so upload still works.
 
-Keep three layers:
+### 2) Worker processes queued jobs
 
-1. **Metadata store (Firestore)**
-- `rag_documents` collection
-- Tracks document-level ingest lifecycle and status.
+Route: `POST /api/rag-documents/process`
 
-2. **Queue + worker state (Redis)**
-- Job queue for async indexing.
-- Retries, backoff, and transient failure handling.
+What happens:
+1. Pop jobs from queue (`RAG_QUEUE_NAME`).
+2. Mark doc `processing` and increment `attempts`.
+3. Download file from Firebase Storage.
+4. Extract text by MIME type:
+   - PDF: `pdfjs-dist`
+   - XLS/XLSX: `xlsx`
+   - CSV: `papaparse`
+   - TXT/MD/JSON: plain text decode
+5. Chunk text using `chunkText`.
+6. Embed chunks with `OpenAIEmbeddings` (`OPENAI_EMBEDDING_MODEL`).
+7. Upsert vectors to Upstash Vector.
+8. Mark Firestore record `ready` with `chunkCount`.
 
-3. **Vector store (Upstash Vector)**
-- One vector per chunk.
-- Metadata includes `userId`, `documentId`, `chunkIndex`, `title`, `mimeType`, `checksum`, `ingestedAt`.
+On failure:
+- Save `error` + `errorCode`.
+- Retry until `RAG_MAX_RETRIES`.
+- Mark `failed` when retries are exhausted.
 
-### 3.2 Firestore schema (proposed)
+### 3) Retrieval during chat
 
-`rag_documents/{id}`
-- `id: string`
-- `userId: string`
-- `fileName: string`
-- `mimeType: string`
-- `size: number`
-- `checksum: string` (dedupe / re-ingestion guard)
-- `status: "queued" | "processing" | "ready" | "failed"`
-- `chunkCount: number`
-- `embeddingModel: string`
-- `vectorNamespace: string`
-- `error: string | null`
-- `createdAt: Date`
-- `updatedAt: Date`
+Route: `POST /api/chat`
 
-Optional audit collection:
-- `rag_document_jobs` for per-step timestamps and retry counters.
+What happens:
+1. Read latest user message.
+2. Create query embedding.
+3. Query Upstash Vector with candidate limit (`RAG_RETRIEVAL_CANDIDATE_K`, with safe defaults).
+4. Filter by `userId` for data isolation.
+5. Select top context chunks (`RAG_TOP_K`).
+6. Inject context into system prompt.
+7. Generate final response from chat model.
 
-### 3.3 Queue contract (Redis)
+Fallback behavior:
+- If vector search is disabled/unavailable, retrieval falls back to token-overlap scoring on stored chunks.
 
-Job payload:
+## Firestore `rag_documents` lifecycle
+
+Status transitions:
+- `queued -> processing -> ready`
+- `queued -> processing -> failed`
+- `queued -> processing -> queued` (retry path)
+
+Important fields tracked:
+- `status`, `error`, `errorCode`
+- `attempts`
+- `queuedAt`, `processingStartedAt`, `readyAt`, `failedAt`
+- `storagePath`, `checksum`, `chunkCount`, `embeddingModel`
+
+## Queue Payload
+
+Each queued job includes:
 - `jobId`
+- `ragDocumentId`
 - `userId`
-- `ragDocumentId` (Firestore document row id)
-- `storagePath` (Firebase Storage object path)
+- `documentId`
+- `storagePath`
 - `mimeType`
 - `checksum`
 - `enqueuedAt`
 
-Queue processing:
-- API only enqueues and returns quickly.
-- Worker changes status `queued -> processing -> ready|failed`.
-- Retry transient errors (network/provider timeouts) up to `RAG_MAX_RETRIES`.
-- Move exhausted jobs to `failed` and preserve error code + reason in Firestore.
+## Vector Schema
 
-### 3.4 Upstash vector keying
-
-Vector ID format:
+Vector id:
 - `${userId}:${documentId}:${chunkIndex}`
 
-Metadata:
+Vector metadata:
 - `userId`
 - `documentId`
-- `chunkIndex`
 - `documentTitle`
-- `mimeType`
-- `checksum`
-- `ingestedAt`
+- `documentKind`
+- `chunkIndex`
 
-Namespace strategy:
-- Option A: one global namespace + metadata filter by `userId`.
-- Option B: namespace per user (can simplify isolation).
+## Required Environment Variables
 
-Recommendation now:
-- Start with global namespace + `userId` metadata filter and strict post-filtering in app.
-
----
-
-## 4) Document ingestion pipeline (step-by-step)
-
-### Step A: Upload acceptance
-- Validate file size/type at API boundary.
-- Store original file in Firebase Storage.
-- Create Firestore doc with `status=queued`.
-- Enqueue ingest job in Redis.
-
-### Step B: Text extraction (worker)
-- Parse by MIME type using dedicated loaders:
-  - PDF: `pdfjs-dist` direct extraction (without fake worker dependency in Next route) or move parsing to background worker/service.
-  - XLS/XLSX: `xlsx` sheet-to-text table serialization.
-  - TXT/MD/CSV/JSON: plain/textual parsing with normalization.
-
-Important:
-- Normalize whitespace/newlines.
-- Preserve section boundaries where possible.
-
-### Step C: Chunking (worker)
-- Use deterministic splitter:
-  - `RecursiveCharacterTextSplitter` (LangChain) or current chunker with overlap.
-- Suggested defaults:
-  - chunk size: 800-1200 chars
-  - overlap: 120-200 chars
-- Store chunk count and chunk hash list.
-
-### Step D: Embedding (worker)
-- Use one embedding model consistently (default: `text-embedding-3-small`).
-- Batch embeddings to avoid rate limit spikes.
-- Retry with exponential backoff for transient provider errors.
-
-### Step E: Vector upsert (worker)
-- Upsert all chunk vectors to Upstash.
-- Validate count match: `upserted == chunkCount`.
-- Update Firestore status to `ready` on success.
-
-### Step F: Failure handling
-- If any step fails:
-  - `status=failed`
-  - persist machine-readable `error`
-  - allow manual retry from UI.
-
----
-
-## 5) Retrieval pipeline (chat time)
-
-1. Build query from latest user message.
-2. Embed query with same embedding model used at ingest.
-3. Query Upstash with `topK` (start with 24-40 raw).
-4. Restrict candidate scope to document IDs owned by current user and optionally to a narrowed working set from metadata filters (title/tags/recent docs).
-5. Enforce user isolation:
-  - metadata filter where supported.
-  - always app-side filter by `userId` as safety net.
-6. Rerank/select final `k` chunks (e.g., top 6-10).
-7. Construct prompt context blocks with title/chunk index.
-8. Generate answer with citations.
-9. If no relevant chunks:
-  - respond clearly that no supporting document context was found.
-
----
-
-## 6) LangChain integration plan
-
-### Ingestion side
-- Use LangChain text splitters for robust chunking.
-- Use `OpenAIEmbeddings` for vector generation.
-- Keep adapter boundaries in:
-  - `lib/rag/ingest.ts`
-  - `lib/rag/vector.ts`
-
-### Retrieval side
-- Keep retrieval in `lib/rag/retrieval.ts`.
-- Add reranking hook (future):
-  - cross-encoder reranker or model-based rerank.
-
-### Prompting
-- Keep `systemPrompt` RAG context bounded (token budget).
-- Add citation formatting contract:
-  - `[Doc: <title> | Chunk: <n>]`
-
----
-
-## 7) Immediate fixes required before continuing implementation
-
-1. Replace current PDF extraction path.
-- Do not use the current `pdf-parse` runtime path in Next route handlers.
-- Preferred:
-  - move PDF extraction to a background worker process, or
-  - use `pdfjs-dist` server parsing with explicit worker-free config compatible with Next runtime.
-
-2. Add explicit ingestion status model.
-- Current flow assumes immediate success.
-- Must track `queued/processing/ready/failed`.
-
-3. Add robust API error contract.
-- API should return step-specific errors (`extract_failed`, `embed_failed`, etc.) not generic `Failed to process request`.
-
-4. Add idempotency and dedupe.
-- Use file checksum + userId to avoid duplicate indexing.
-
----
-
-## 8) Implementation phases
-
-### Phase 1: Stabilize ingestion core
-- Introduce ingestion status tracking.
-- Swap PDF parser to a Next-compatible strategy.
-- Keep upload synchronous for now but with clear step-level errors.
-
-### Phase 2: Productionize indexing
-- Move ingestion to async/background job.
-- Add retry/backoff and dead-letter status.
-- Add observability metrics (time per step, failure rate).
-
-### Phase 3: Retrieval quality
-- Add reranking.
-- Add query rewriting (optional).
-- Add answer citations in UI.
-
-### Phase 4: Management UX
-- RAG docs page shows per-document status, chunk count, updated time.
-- Add delete/reindex actions.
-- Add “last indexed with model X”.
-
----
-
-## 9) Required environment variables
-
-- `NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET`
-- `FIREBASE_SERVICE_ACCOUNT_PROJECT_ID` (or full `FIREBASE_SERVICE_ACCOUNT_*` set used by repo)
+Core RAG:
 - `UPSTASH_VECTOR_REST_URL`
 - `UPSTASH_VECTOR_REST_TOKEN`
-- `UPSTASH_REDIS_REST_URL` (or `REDIS_URL` if using classic Redis queue client)
-- `UPSTASH_REDIS_REST_TOKEN` (if using Upstash Redis REST)
-- `OPENAI_API_KEY` or `LLM_API_KEY`
 - `OPENAI_EMBEDDING_MODEL` (default `text-embedding-3-small`)
+- `OPENAI_API_KEY` or `LLM_API_KEY`
 
-Optional but recommended:
+Queue (preferred):
+- `UPSTASH_REDIS_REST_URL`
+- `UPSTASH_REDIS_REST_TOKEN`
+
+Queue fallback (optional):
+- `REDIS_URL` (must be `redis://...`)
+
+Tuning:
+- `RAG_QUEUE_NAME`
 - `RAG_TOP_K`
+- `RAG_RETRIEVAL_CANDIDATE_K`
 - `RAG_CHUNK_SIZE`
 - `RAG_CHUNK_OVERLAP`
-- `RAG_RETRIEVAL_CANDIDATE_K`
 - `RAG_MAX_RETRIES`
 - `RAG_RETRY_BASE_MS`
-- `RAG_QUEUE_NAME`
+- `RAG_WORKER_SECRET` (recommended for secure worker endpoint)
 
----
+## Operational Notes
 
-## 10) Acceptance criteria
-
-A document is considered successfully indexed only if:
-1. Text extraction succeeds.
-2. Chunk count > 0.
-3. Embeddings generated for all chunks.
-4. All chunk vectors upserted.
-5. Firestore document status becomes `ready`.
-
-A chat answer is considered RAG-grounded only if:
-1. Retrieval returns chunks from current user scope.
-2. Prompt contains those chunks.
-3. Response includes citations or explicit no-context fallback.
-
----
-
-## 11) Current repo gap summary
-
-What exists now:
-- Upstash vector client integration.
-- Chunking and embedding path.
-- Basic RAG upload/list page and route.
-
-What is missing/weak:
-- PDF extraction compatibility in Next runtime.
-- Job lifecycle and status tracking.
-- Reliable step-level errors and retries.
-- De-duplication/idempotency.
-- Citation-first answer UX.
+- RAG documents page polls status and can trigger processing route while docs are pending.
+- For production, schedule `POST /api/rag-documents/process` via cron with `x-rag-worker-secret`.
+- User data isolation is enforced in retrieval by `userId` filtering.
