@@ -50,6 +50,31 @@ function toDate(value: unknown): Date {
   return new Date();
 }
 
+function isFirestoreMissingIndexError(error: unknown): boolean {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+
+  const maybeError = error as { message?: unknown; code?: unknown };
+  const message =
+    typeof maybeError.message === "string" ? maybeError.message : "";
+  const code = typeof maybeError.code === "string" ? maybeError.code : "";
+
+  return (
+    code.includes("failed-precondition") ||
+    message.includes("requires an index") ||
+    message.includes("FAILED_PRECONDITION")
+  );
+}
+
+function getErrorCause(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  return typeof error === "string" ? error : "Unknown database error";
+}
+
 function clean<T extends Record<string, unknown>>(value: T) {
   return Object.fromEntries(
     Object.entries(value).filter(([, item]) => item !== undefined)
@@ -376,8 +401,39 @@ export async function getChatsByUserId({
         .limit(extendedLimit);
     }
 
-    const snapshot = await query.get();
-    const filteredChats = snapshot.docs.map(mapChat);
+    let filteredChats: Chat[];
+
+    try {
+      const snapshot = await query.get();
+      filteredChats = snapshot.docs.map(mapChat);
+    } catch (queryError) {
+      if (!isFirestoreMissingIndexError(queryError)) {
+        throw queryError;
+      }
+
+      // Fallback for environments where the composite index is not provisioned yet.
+      const fallbackSnapshot = await db
+        .collection(CHATS)
+        .where("userId", "==", id)
+        .get();
+
+      filteredChats = fallbackSnapshot.docs
+        .map(mapChat)
+        .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+
+      if (startingAfter && selectedChat) {
+        filteredChats = filteredChats.filter(
+          (chat) => chat.createdAt > selectedChat.createdAt
+        );
+      } else if (endingBefore && selectedChat) {
+        filteredChats = filteredChats.filter(
+          (chat) => chat.createdAt < selectedChat.createdAt
+        );
+      }
+
+      filteredChats = filteredChats.slice(0, extendedLimit);
+    }
+
     const hasMore = filteredChats.length > limit;
 
     return {
@@ -390,7 +446,7 @@ export async function getChatsByUserId({
     }
     throw new ChatbotError(
       "bad_request:database",
-      "Failed to get chats by user id"
+      getErrorCause(error)
     );
   }
 }
