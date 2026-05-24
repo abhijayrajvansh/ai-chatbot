@@ -1,5 +1,7 @@
 allowBuilds:
+  '@firebase/util': true
   bufferutil: true
   esbuild: true
   onnxruntime-node: true
+  protobufjs: true
   sharp: true
