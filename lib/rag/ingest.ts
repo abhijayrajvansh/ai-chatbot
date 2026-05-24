@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { createRequire } from "node:module";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
 import { saveDocument } from "@/lib/db/queries";
@@ -15,7 +16,6 @@ const SUPPORTED_MIME_TYPES = new Set([
   "text/csv",
   "application/json",
 ]);
-const require = createRequire(import.meta.url);
 
 export function isSupportedRagFileType(type: string) {
   return SUPPORTED_MIME_TYPES.has(type);
@@ -27,9 +27,15 @@ function sanitizeName(name: string) {
 
 async function extractTextFromPdf(buffer: Buffer) {
   const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
-  pdfjs.GlobalWorkerOptions.workerSrc = require.resolve(
-    "pdfjs-dist/legacy/build/pdf.worker.mjs"
+  const workerPath = path.join(
+    process.cwd(),
+    "node_modules",
+    "pdfjs-dist",
+    "legacy",
+    "build",
+    "pdf.worker.mjs"
   );
+  pdfjs.GlobalWorkerOptions.workerSrc = pathToFileURL(workerPath).href;
   const loadingTask = pdfjs.getDocument({
     data: new Uint8Array(buffer),
   });
