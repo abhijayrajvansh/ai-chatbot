@@ -1,9 +1,9 @@
+import { createHash } from "node:crypto";
 import Papa from "papaparse";
 import * as XLSX from "xlsx";
 import { saveDocument } from "@/lib/db/queries";
 import { chunkText } from "@/lib/rag/chunk";
 import { upsertDocumentChunksToVectorStore } from "@/lib/rag/vector";
-import { generateUUID } from "@/lib/utils";
 
 const SUPPORTED_MIME_TYPES = new Set([
   "application/pdf",
@@ -24,13 +24,33 @@ function sanitizeName(name: string) {
 }
 
 async function extractTextFromPdf(buffer: Buffer) {
-  const pdfParseModule = await import("pdf-parse");
-  const parser = new pdfParseModule.PDFParse({ data: buffer });
+  const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  pdfjs.GlobalWorkerOptions.workerSrc = "";
+  const loadingTask = pdfjs.getDocument({
+    data: new Uint8Array(buffer),
+  });
+
+  const pdf = await loadingTask.promise;
   try {
-    const parsed = await parser.getText();
-    return parsed.text.trim();
+    const pages: string[] = [];
+
+    for (let pageNum = 1; pageNum <= pdf.numPages; pageNum += 1) {
+      const page = await pdf.getPage(pageNum);
+      const content = await page.getTextContent();
+      const text = content.items
+        .map((item) =>
+          "str" in item && typeof item.str === "string" ? item.str : ""
+        )
+        .join(" ")
+        .trim();
+      if (text) {
+        pages.push(text);
+      }
+    }
+
+    return pages.join("\n\n").trim();
   } finally {
-    await parser.destroy();
+    await pdf.destroy();
   }
 }
 
@@ -76,12 +96,19 @@ export async function extractTextFromRagFile(file: File) {
   return content.trim();
 }
 
+export async function getRagFileChecksum(file: File) {
+  const buffer = Buffer.from(await file.arrayBuffer());
+  return createHash("sha256").update(buffer).digest("hex");
+}
+
 export async function ingestRagDocument({
   file,
   userId,
+  documentId,
 }: {
   file: File;
   userId: string;
+  documentId: string;
 }) {
   const fileName = sanitizeName(file.name);
   const text = (await extractTextFromRagFile(file)).trim();
@@ -90,7 +117,6 @@ export async function ingestRagDocument({
     throw new Error("The uploaded file has no readable text");
   }
 
-  const documentId = generateUUID();
   const chunks = chunkText(text);
 
   if (chunks.length === 0) {

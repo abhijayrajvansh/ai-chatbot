@@ -57,7 +57,7 @@
     "next-themes": "^0.3.0",
     "orderedmap": "^2.1.1",
     "papaparse": "^5.5.2",
-    "pdf-parse": "^2.4.5",
+    "pdfjs-dist": "^5.7.284",
     "prosemirror-example-setup": "^1.2.3",
     "prosemirror-inputrules": "^1.4.0",
     "prosemirror-markdown": "^1.13.1",

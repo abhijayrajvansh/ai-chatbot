@@ -194,9 +194,16 @@ function mapRagDocument(snapshot: DocumentSnapshot<DocumentData>): RagDocument {
     fileName: String(data.fileName ?? ""),
     mimeType: String(data.mimeType ?? ""),
     size: Number(data.size ?? 0),
+    checksum: String(data.checksum ?? ""),
+    status:
+      (data.status as RagDocument["status"] | undefined) ?? "processing",
+    error: (data.error as string | null | undefined) ?? null,
+    embeddingModel:
+      String(data.embeddingModel ?? process.env.OPENAI_EMBEDDING_MODEL ?? ""),
     chunkCount: Number(data.chunkCount ?? 0),
     userId: String(data.userId ?? ""),
     createdAt: toDate(data.createdAt),
+    updatedAt: toDate(data.updatedAt),
   };
 }
 
@@ -1025,45 +1032,133 @@ export async function getRagDocumentsByUserId({ userId }: { userId: string }) {
 }
 
 export async function saveRagDocument({
+  id,
   documentId,
   title,
   fileName,
   mimeType,
   size,
+  checksum,
+  status,
+  error,
+  embeddingModel,
   chunkCount,
   userId,
 }: {
+  id?: string;
   documentId: string;
   title: string;
   fileName: string;
   mimeType: string;
   size: number;
+  checksum: string;
+  status: RagDocument["status"];
+  error?: string | null;
+  embeddingModel?: string;
   chunkCount: number;
   userId: string;
 }) {
   try {
-    const id = generateUUID();
+    const ragDocumentId = id ?? generateUUID();
     const createdAt = new Date();
+    const updatedAt = createdAt;
 
     const item = {
-      id,
+      id: ragDocumentId,
       documentId,
       title,
       fileName,
       mimeType,
       size,
+      checksum,
+      status,
+      error: error ?? null,
+      embeddingModel:
+        embeddingModel ??
+        process.env.OPENAI_EMBEDDING_MODEL?.trim() ??
+        "text-embedding-3-small",
       chunkCount,
       userId,
       createdAt,
+      updatedAt,
     };
 
-    await firestore().collection(RAG_DOCUMENTS).doc(id).set(item);
+    await firestore().collection(RAG_DOCUMENTS).doc(ragDocumentId).set(item);
 
     return item;
   } catch {
     throw new ChatbotError(
       "bad_request:database",
       "Failed to save rag document"
+    );
+  }
+}
+
+export async function getRagDocumentByChecksumForUser({
+  userId,
+  checksum,
+}: {
+  userId: string;
+  checksum: string;
+}) {
+  try {
+    const snapshot = await firestore()
+      .collection(RAG_DOCUMENTS)
+      .where("userId", "==", userId)
+      .get();
+
+    const selected = snapshot.docs
+      .map(mapRagDocument)
+      .filter((doc) => doc.checksum === checksum)
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0];
+
+    return selected;
+  } catch {
+    throw new ChatbotError(
+      "bad_request:database",
+      "Failed to get rag document by checksum"
+    );
+  }
+}
+
+export async function updateRagDocumentById({
+  id,
+  documentId,
+  status,
+  chunkCount,
+  error,
+}: {
+  id: string;
+  documentId?: string;
+  status?: RagDocument["status"];
+  chunkCount?: number;
+  error?: string | null;
+}) {
+  try {
+    const patch: Record<string, unknown> = {
+      updatedAt: new Date(),
+    };
+
+    if (documentId !== undefined) {
+      patch.documentId = documentId;
+    }
+    if (status !== undefined) {
+      patch.status = status;
+    }
+    if (chunkCount !== undefined) {
+      patch.chunkCount = chunkCount;
+    }
+    if (error !== undefined) {
+      patch.error = error;
+    }
+
+    await firestore().collection(RAG_DOCUMENTS).doc(id).set(patch, {
+      merge: true,
+    });
+  } catch {
+    throw new ChatbotError(
+      "bad_request:database",
+      "Failed to update rag document by id"
     );
   }
 }

@@ -1,10 +1,19 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { auth } from "@/app/(auth)/auth";
-import { getRagDocumentsByUserId, saveRagDocument } from "@/lib/db/queries";
+import {
+  getRagDocumentByChecksumForUser,
+  getRagDocumentsByUserId,
+  saveRagDocument,
+  updateRagDocumentById,
+} from "@/lib/db/queries";
 import { ChatbotError } from "@/lib/errors";
 import { isLocalUiOnlyMode } from "@/lib/local-mode";
-import { ingestRagDocument, isSupportedRagFileType } from "@/lib/rag/ingest";
+import {
+  getRagFileChecksum,
+  ingestRagDocument,
+  isSupportedRagFileType,
+} from "@/lib/rag/ingest";
 import { generateUUID } from "@/lib/utils";
 
 const UploadSchema = z.object({
@@ -68,6 +77,8 @@ export async function POST(request: Request) {
     return new Response("Request body is empty", { status: 400 });
   }
 
+  let ragDocumentId: string | null = null;
+
   try {
     const formData = await request.formData();
     const file = formData.get("file") as Blob;
@@ -82,27 +93,98 @@ export async function POST(request: Request) {
     }
 
     const uploadedFile = formData.get("file") as File;
+    const checksum = await getRagFileChecksum(uploadedFile);
+
+    const existingDocument = await getRagDocumentByChecksumForUser({
+      userId: session.user.id,
+      checksum,
+    });
+
+    if (existingDocument?.status === "ready") {
+      return Response.json(
+        { document: existingDocument, deduplicated: true },
+        { status: 200 }
+      );
+    }
+
+    ragDocumentId = generateUUID();
+    const draftDocumentId = generateUUID();
+
+    await saveRagDocument({
+      id: ragDocumentId,
+      documentId: draftDocumentId,
+      title: uploadedFile.name,
+      fileName: uploadedFile.name,
+      mimeType: uploadedFile.type,
+      size: uploadedFile.size,
+      checksum,
+      status: "processing",
+      chunkCount: 0,
+      error: null,
+      userId: session.user.id,
+    });
+
     const ingested = await ingestRagDocument({
       file: uploadedFile,
       userId: session.user.id,
+      documentId: draftDocumentId,
     });
 
-    const ragDocument = await saveRagDocument({
+    await updateRagDocumentById({
+      id: ragDocumentId,
       documentId: ingested.documentId,
-      title: ingested.fileName,
-      fileName: ingested.fileName,
-      mimeType: ingested.mimeType,
-      size: ingested.size,
+      status: "ready",
       chunkCount: ingested.chunkCount,
-      userId: session.user.id,
+      error: null,
     });
 
-    return Response.json({ document: ragDocument }, { status: 201 });
+    const documents = await getRagDocumentsByUserId({ userId: session.user.id });
+    const ragDocument = documents.find((document) => document.id === ragDocumentId);
+
+    return Response.json(
+      {
+        document:
+          ragDocument ??
+          ({
+            id: ragDocumentId,
+            documentId: ingested.documentId,
+            title: ingested.fileName,
+            fileName: ingested.fileName,
+            mimeType: ingested.mimeType,
+            size: ingested.size,
+            checksum,
+            status: "ready",
+            error: null,
+            embeddingModel:
+              process.env.OPENAI_EMBEDDING_MODEL?.trim() ??
+              "text-embedding-3-small",
+            chunkCount: ingested.chunkCount,
+            userId: session.user.id,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          } as const),
+      },
+      { status: 201 }
+    );
   } catch (error) {
-    const cause = error instanceof Error ? error.message : "Failed to process request";
+    const cause =
+      error instanceof Error ? error.message : "Failed to process request";
+    const isValidationError =
+      cause.includes("readable text") || cause.includes("chunk");
+
+    const code = isValidationError ? "extract_failed" : "index_failed";
+
+    if (ragDocumentId) {
+      await updateRagDocumentById({
+        id: ragDocumentId,
+        status: "failed",
+        error: cause,
+      }).catch(() => null);
+    }
+
     return NextResponse.json(
-      { error: cause },
-      { status: 500 }
+      { error: cause, code },
+      { status: isValidationError ? 400 : 500 }
     );
   }
 }

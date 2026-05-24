@@ -14,8 +14,13 @@ type RagDocument = {
   fileName: string;
   mimeType: string;
   size: number;
+  checksum: string;
+  status: "queued" | "processing" | "ready" | "failed";
+  error: string | null;
+  embeddingModel: string;
   chunkCount: number;
   createdAt: string;
+  updatedAt: string;
 };
 
 function formatBytes(bytes: number) {
@@ -172,8 +177,11 @@ export function RagDocumentsPanel() {
                       <p className="truncate text-sm font-medium">{doc.title}</p>
                     </div>
                     <p className="mt-1 text-xs text-muted-foreground">
-                      {doc.chunkCount} chunks • {formatBytes(doc.size)} • {new Date(doc.createdAt).toLocaleString()}
+                      {doc.status} • {doc.chunkCount} chunks • {formatBytes(doc.size)} • {new Date(doc.createdAt).toLocaleString()}
                     </p>
+                    {doc.error ? (
+                      <p className="mt-1 text-xs text-destructive">{doc.error}</p>
+                    ) : null}
                   </div>
                 </div>
               ))}
