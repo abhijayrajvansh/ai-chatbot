@@ -1011,10 +1011,11 @@ export async function getRagDocumentsByUserId({ userId }: { userId: string }) {
     const snapshot = await firestore()
       .collection(RAG_DOCUMENTS)
       .where("userId", "==", userId)
-      .orderBy("createdAt", "desc")
       .get();
 
-    return snapshot.docs.map(mapRagDocument);
+    return snapshot.docs
+      .map(mapRagDocument)
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
   } catch {
     throw new ChatbotError(
       "bad_request:database",

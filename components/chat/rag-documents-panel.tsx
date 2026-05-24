@@ -2,6 +2,7 @@
 
 import { FileTextIcon, UploadIcon } from "lucide-react";
 import { useCallback, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
 import useSWR from "swr";
 import { Button } from "@/components/ui/button";
 import { cn, fetcher } from "@/lib/utils";
@@ -70,6 +71,11 @@ export function RagDocumentsPanel() {
         for (const file of fileArray) {
           await uploadFile(file);
         }
+        toast.success("Document upload complete");
+      } catch (error) {
+        toast.error(
+          error instanceof Error ? error.message : "Failed to upload document"
+        );
       } finally {
         setIsUploading(false);
       }

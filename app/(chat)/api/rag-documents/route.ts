@@ -30,9 +30,16 @@ export async function GET() {
     return new ChatbotError("unauthorized:document").toResponse();
   }
 
-  const documents = await getRagDocumentsByUserId({ userId: session.user.id });
-
-  return Response.json({ documents }, { status: 200 });
+  try {
+    const documents = await getRagDocumentsByUserId({ userId: session.user.id });
+    return Response.json({ documents }, { status: 200 });
+  } catch (error) {
+    const cause = error instanceof Error ? error.message : "Unknown error";
+    return NextResponse.json(
+      { code: "bad_request:database", cause },
+      { status: 400 }
+    );
+  }
 }
 
 export async function POST(request: Request) {
@@ -91,9 +98,10 @@ export async function POST(request: Request) {
     });
 
     return Response.json({ document: ragDocument }, { status: 201 });
-  } catch {
+  } catch (error) {
+    const cause = error instanceof Error ? error.message : "Failed to process request";
     return NextResponse.json(
-      { error: "Failed to process request" },
+      { error: cause },
       { status: 500 }
     );
   }
