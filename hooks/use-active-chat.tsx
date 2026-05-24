@@ -169,31 +169,24 @@ export function ActiveChatProvider({ children }: { children: ReactNode }) {
     },
   });
 
-  const loadedChatIds = useRef(new Set<string>());
-
-  if (isNewChat && !loadedChatIds.current.has(newChatIdRef.current)) {
-    loadedChatIds.current.add(newChatIdRef.current);
-  }
-
   useEffect(() => {
-    if (loadedChatIds.current.has(chatId)) {
+    if (isNewChat) {
       return;
     }
+
     if (chatData?.messages) {
-      loadedChatIds.current.add(chatId);
       setMessages(chatData.messages);
     }
-  }, [chatId, chatData?.messages, setMessages]);
+  }, [chatId, chatData?.messages, isNewChat, setMessages]);
 
   const prevChatIdRef = useRef(chatId);
   useEffect(() => {
     if (prevChatIdRef.current !== chatId) {
       prevChatIdRef.current = chatId;
-      if (isNewChat) {
-        setMessages([]);
-      }
+      // Clear immediately on route switch; chat-specific messages are hydrated by SWR effect.
+      setMessages([]);
     }
-  }, [chatId, isNewChat, setMessages]);
+  }, [chatId, setMessages]);
 
   useEffect(() => {
     if (chatData && !isNewChat) {
