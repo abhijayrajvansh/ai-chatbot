@@ -86,6 +86,7 @@ function PureMultimodalInput({
   editingMessage,
   onCancelEdit,
   isLoading,
+  showSuggestedActions = true,
 }: {
   chatId: string;
   input: string;
@@ -106,6 +107,7 @@ function PureMultimodalInput({
   editingMessage?: ChatMessage | null;
   onCancelEdit?: () => void;
   isLoading?: boolean;
+  showSuggestedActions?: boolean;
 }) {
   const router = useRouter();
   const { setTheme, resolvedTheme } = useTheme();
@@ -386,7 +388,8 @@ function PureMultimodalInput({
         </div>
       )}
 
-      {!editingMessage &&
+      {showSuggestedActions &&
+        !editingMessage &&
         !isLoading &&
         messages.length === 0 &&
         attachments.length === 0 &&

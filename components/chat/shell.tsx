@@ -15,6 +15,7 @@ import { DataStreamHandler } from "./data-stream-handler";
 import { submitEditedMessage } from "./message-editor";
 import { Messages } from "./messages";
 import { MultimodalInput } from "./multimodal-input";
+import { SuggestedActions } from "./suggested-actions";
 
 export function ChatShell() {
   const {
@@ -57,6 +58,8 @@ export function ChatShell() {
     }
   }, [chatId, setArtifact]);
 
+  const isNewChatLayout = !isReadonly && !isLoading && messages.length === 0;
+
   return (
     <>
       <div className="flex h-dvh w-full flex-row overflow-hidden">
@@ -72,30 +75,75 @@ export function ChatShell() {
           />
 
           <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden bg-background md:rounded-tl-[12px] md:border-t md:border-l md:border-border/40">
-            <Messages
-              addToolApprovalResponse={addToolApprovalResponse}
-              chatId={chatId}
-              isArtifactVisible={isArtifactVisible}
-              isLoading={isLoading}
-              isReadonly={isReadonly}
-              messages={messages}
-              onEditMessage={(msg) => {
-                const text = msg.parts
-                  ?.filter((p) => p.type === "text")
-                  .map((p) => p.text)
-                  .join("");
-                setInput(text ?? "");
-                setEditingMessage(msg);
-              }}
-              regenerate={regenerate}
-              selectedModelId={currentModelId}
-              setMessages={setMessages}
-              status={status}
-              votes={votes}
-            />
+            {!isNewChatLayout && (
+              <>
+                <Messages
+                  addToolApprovalResponse={addToolApprovalResponse}
+                  chatId={chatId}
+                  isArtifactVisible={isArtifactVisible}
+                  isLoading={isLoading}
+                  isReadonly={isReadonly}
+                  messages={messages}
+                  onEditMessage={(msg) => {
+                    const text = msg.parts
+                      ?.filter((p) => p.type === "text")
+                      .map((p) => p.text)
+                      .join("");
+                    setInput(text ?? "");
+                    setEditingMessage(msg);
+                  }}
+                  regenerate={regenerate}
+                  selectedModelId={currentModelId}
+                  setMessages={setMessages}
+                  status={status}
+                  votes={votes}
+                />
 
-            <div className="sticky bottom-0 z-1 mx-auto flex w-full max-w-4xl gap-2 border-t-0 bg-background px-2 pb-3 md:px-4 md:pb-4">
-              {!isReadonly && (
+                <div className="sticky bottom-0 z-1 mx-auto flex w-full max-w-4xl gap-2 border-t-0 bg-background px-2 pb-3 md:px-4 md:pb-4">
+                  {!isReadonly && (
+                    <MultimodalInput
+                      attachments={attachments}
+                      chatId={chatId}
+                      editingMessage={editingMessage}
+                      input={input}
+                      isLoading={isLoading}
+                      messages={messages}
+                      onCancelEdit={() => {
+                        setEditingMessage(null);
+                        setInput("");
+                      }}
+                      onModelChange={setCurrentModelId}
+                      selectedModelId={currentModelId}
+                      selectedVisibilityType={visibilityType}
+                      sendMessage={
+                        editingMessage
+                          ? async () => {
+                              const msg = editingMessage;
+                              setEditingMessage(null);
+                              await submitEditedMessage({
+                                message: msg,
+                                text: input,
+                                setMessages,
+                                regenerate,
+                              });
+                              setInput("");
+                            }
+                          : sendMessage
+                      }
+                      setAttachments={setAttachments}
+                      setInput={setInput}
+                      setMessages={setMessages}
+                      showSuggestedActions={false}
+                      status={status}
+                      stop={stop}
+                    />
+                  )}
+                </div>
+              </>
+            )}
+
+            {isNewChatLayout && (
+              <div className="mx-auto flex h-full w-full max-w-4xl flex-col items-center px-2 pt-[56vh] pb-4 md:px-4">
                 <MultimodalInput
                   attachments={attachments}
                   chatId={chatId}
@@ -128,11 +176,20 @@ export function ChatShell() {
                   setAttachments={setAttachments}
                   setInput={setInput}
                   setMessages={setMessages}
+                  showSuggestedActions={false}
                   status={status}
                   stop={stop}
                 />
-              )}
-            </div>
+
+                <div className="mt-3 w-full">
+                  <SuggestedActions
+                    chatId={chatId}
+                    selectedVisibilityType={visibilityType}
+                    sendMessage={sendMessage}
+                  />
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
