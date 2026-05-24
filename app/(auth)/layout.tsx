@@ -14,7 +14,7 @@ export default function AuthLayout({
           href="/"
         >
           <MessageSquareIcon className="size-4" />
-          Chatbot
+          Brackets AI Chatbot
         </Link>
         {children}
       </div>
