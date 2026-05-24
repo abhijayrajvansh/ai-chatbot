@@ -75,21 +75,30 @@ function extractTextFromCsv(content: string) {
 
 export async function extractTextFromRagFile(file: File) {
   const buffer = Buffer.from(await file.arrayBuffer());
+  return extractTextFromRagBuffer({ buffer, mimeType: file.type });
+}
 
-  if (file.type === "application/pdf") {
+export async function extractTextFromRagBuffer({
+  buffer,
+  mimeType,
+}: {
+  buffer: Buffer;
+  mimeType: string;
+}) {
+  if (mimeType === "application/pdf") {
     return extractTextFromPdf(buffer);
   }
 
   if (
-    file.type === "application/vnd.ms-excel" ||
-    file.type === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    mimeType === "application/vnd.ms-excel" ||
+    mimeType === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
   ) {
     return extractTextFromSpreadsheet(buffer);
   }
 
   const content = buffer.toString("utf-8");
 
-  if (file.type === "text/csv") {
+  if (mimeType === "text/csv") {
     return extractTextFromCsv(content);
   }
 
@@ -102,16 +111,22 @@ export async function getRagFileChecksum(file: File) {
 }
 
 export async function ingestRagDocument({
-  file,
+  fileName,
+  mimeType,
+  fileSize,
+  fileBuffer,
   userId,
   documentId,
 }: {
-  file: File;
+  fileName: string;
+  mimeType: string;
+  fileSize: number;
+  fileBuffer: Buffer;
   userId: string;
   documentId: string;
 }) {
-  const fileName = sanitizeName(file.name);
-  const text = (await extractTextFromRagFile(file)).trim();
+  const sanitizedName = sanitizeName(fileName);
+  const text = (await extractTextFromRagBuffer({ buffer: fileBuffer, mimeType })).trim();
 
   if (!text) {
     throw new Error("The uploaded file has no readable text");
@@ -125,7 +140,7 @@ export async function ingestRagDocument({
 
   await saveDocument({
     id: documentId,
-    title: fileName,
+    title: sanitizedName,
     kind: "text",
     content: text,
     userId,
@@ -134,16 +149,16 @@ export async function ingestRagDocument({
   await upsertDocumentChunksToVectorStore({
     userId,
     documentId,
-    documentTitle: fileName,
+    documentTitle: sanitizedName,
     documentKind: "text",
     chunks,
   });
 
   return {
     documentId,
-    fileName,
+    fileName: sanitizedName,
     chunkCount: chunks.length,
-    mimeType: file.type,
-    size: file.size,
+    mimeType,
+    size: fileSize,
   };
 }

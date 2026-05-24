@@ -177,7 +177,6 @@ export async function POST(request: Request) {
     const relevantChunks = await getRelevantContextForUser({
       userId: session.user.id,
       query: userText,
-      limit: 6,
     });
     const retrievedContext = formatRetrievedContext(relevantChunks);
 

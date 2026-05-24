@@ -1,7 +1,7 @@
 "use client";
 
 import { FileTextIcon, UploadIcon } from "lucide-react";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import useSWR from "swr";
 import { Button } from "@/components/ui/button";
@@ -36,10 +36,35 @@ export function RagDocumentsPanel() {
 
   const { data, mutate } = useSWR<{ documents: RagDocument[] }>(
     `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/api/rag-documents`,
-    fetcher
+    fetcher,
+    {
+      refreshInterval: 4000,
+    }
   );
 
   const documents = useMemo(() => data?.documents ?? [], [data]);
+  const hasPendingDocuments = useMemo(
+    () =>
+      documents.some(
+        (document) =>
+          document.status === "queued" || document.status === "processing"
+      ),
+    [documents]
+  );
+
+  useEffect(() => {
+    if (!hasPendingDocuments) {
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      fetch(`${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/api/rag-documents/process?limit=2`, {
+        method: "POST",
+      }).catch(() => null);
+    }, 500);
+
+    return () => clearTimeout(timer);
+  }, [hasPendingDocuments]);
 
   const uploadFile = useCallback(
     async (file: File) => {

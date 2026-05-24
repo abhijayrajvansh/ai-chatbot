@@ -3,9 +3,20 @@ export type TextChunk = {
   content: string;
 };
 
+function parsePositiveInt(value: string | undefined, fallback: number) {
+  const parsed = Number.parseInt(value ?? "", 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+  return parsed;
+}
+
 export function chunkText(
   text: string,
-  { chunkSize = 1200, overlap = 180 }: { chunkSize?: number; overlap?: number } = {}
+  {
+    chunkSize = parsePositiveInt(process.env.RAG_CHUNK_SIZE, 1200),
+    overlap = parsePositiveInt(process.env.RAG_CHUNK_OVERLAP, 180),
+  }: { chunkSize?: number; overlap?: number } = {}
 ) {
   const normalized = text.replace(/\r\n/g, "\n").trim();
 

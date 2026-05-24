@@ -101,10 +101,19 @@ export async function queryDocumentChunksFromVectorStore({
   }
 
   const vector = await embeddings.embedQuery(query);
+  const retrievalCandidateK = Number.parseInt(
+    process.env.RAG_RETRIEVAL_CANDIDATE_K ?? "",
+    10
+  );
+  const defaultTopK = Math.max(limit * 8, 24);
+  const topK =
+    Number.isFinite(retrievalCandidateK) && retrievalCandidateK > 0
+      ? Math.max(defaultTopK, retrievalCandidateK)
+      : defaultTopK;
 
   const results = await index.query({
     vector,
-    topK: Math.max(limit * 8, 24),
+    topK,
     includeData: true,
     includeMetadata: true,
   });

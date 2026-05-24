@@ -195,9 +195,19 @@ function mapRagDocument(snapshot: DocumentSnapshot<DocumentData>): RagDocument {
     mimeType: String(data.mimeType ?? ""),
     size: Number(data.size ?? 0),
     checksum: String(data.checksum ?? ""),
+    storagePath:
+      typeof data.storagePath === "string" ? data.storagePath : null,
     status:
       (data.status as RagDocument["status"] | undefined) ?? "processing",
     error: (data.error as string | null | undefined) ?? null,
+    errorCode: (data.errorCode as string | null | undefined) ?? null,
+    queuedAt: data.queuedAt ? toDate(data.queuedAt) : null,
+    processingStartedAt: data.processingStartedAt
+      ? toDate(data.processingStartedAt)
+      : null,
+    readyAt: data.readyAt ? toDate(data.readyAt) : null,
+    failedAt: data.failedAt ? toDate(data.failedAt) : null,
+    attempts: Number(data.attempts ?? 0),
     embeddingModel:
       String(data.embeddingModel ?? process.env.OPENAI_EMBEDDING_MODEL ?? ""),
     chunkCount: Number(data.chunkCount ?? 0),
@@ -1039,8 +1049,15 @@ export async function saveRagDocument({
   mimeType,
   size,
   checksum,
+  storagePath,
   status,
   error,
+  errorCode,
+  queuedAt,
+  processingStartedAt,
+  readyAt,
+  failedAt,
+  attempts,
   embeddingModel,
   chunkCount,
   userId,
@@ -1052,8 +1069,15 @@ export async function saveRagDocument({
   mimeType: string;
   size: number;
   checksum: string;
+  storagePath?: string | null;
   status: RagDocument["status"];
   error?: string | null;
+  errorCode?: string | null;
+  queuedAt?: Date | null;
+  processingStartedAt?: Date | null;
+  readyAt?: Date | null;
+  failedAt?: Date | null;
+  attempts?: number;
   embeddingModel?: string;
   chunkCount: number;
   userId: string;
@@ -1071,8 +1095,15 @@ export async function saveRagDocument({
       mimeType,
       size,
       checksum,
+      storagePath: storagePath ?? null,
       status,
       error: error ?? null,
+      errorCode: errorCode ?? null,
+      queuedAt: queuedAt ?? null,
+      processingStartedAt: processingStartedAt ?? null,
+      readyAt: readyAt ?? null,
+      failedAt: failedAt ?? null,
+      attempts: attempts ?? 0,
       embeddingModel:
         embeddingModel ??
         process.env.OPENAI_EMBEDDING_MODEL?.trim() ??
@@ -1124,15 +1155,29 @@ export async function getRagDocumentByChecksumForUser({
 export async function updateRagDocumentById({
   id,
   documentId,
+  storagePath,
   status,
   chunkCount,
   error,
+  errorCode,
+  queuedAt,
+  processingStartedAt,
+  readyAt,
+  failedAt,
+  attempts,
 }: {
   id: string;
   documentId?: string;
+  storagePath?: string | null;
   status?: RagDocument["status"];
   chunkCount?: number;
   error?: string | null;
+  errorCode?: string | null;
+  queuedAt?: Date | null;
+  processingStartedAt?: Date | null;
+  readyAt?: Date | null;
+  failedAt?: Date | null;
+  attempts?: number;
 }) {
   try {
     const patch: Record<string, unknown> = {
@@ -1141,6 +1186,9 @@ export async function updateRagDocumentById({
 
     if (documentId !== undefined) {
       patch.documentId = documentId;
+    }
+    if (storagePath !== undefined) {
+      patch.storagePath = storagePath;
     }
     if (status !== undefined) {
       patch.status = status;
@@ -1151,6 +1199,24 @@ export async function updateRagDocumentById({
     if (error !== undefined) {
       patch.error = error;
     }
+    if (errorCode !== undefined) {
+      patch.errorCode = errorCode;
+    }
+    if (queuedAt !== undefined) {
+      patch.queuedAt = queuedAt;
+    }
+    if (processingStartedAt !== undefined) {
+      patch.processingStartedAt = processingStartedAt;
+    }
+    if (readyAt !== undefined) {
+      patch.readyAt = readyAt;
+    }
+    if (failedAt !== undefined) {
+      patch.failedAt = failedAt;
+    }
+    if (attempts !== undefined) {
+      patch.attempts = attempts;
+    }
 
     await firestore().collection(RAG_DOCUMENTS).doc(id).set(patch, {
       merge: true,
@@ -1159,6 +1225,21 @@ export async function updateRagDocumentById({
     throw new ChatbotError(
       "bad_request:database",
       "Failed to update rag document by id"
+    );
+  }
+}
+
+export async function getRagDocumentById({ id }: { id: string }) {
+  try {
+    const snapshot = await firestore().collection(RAG_DOCUMENTS).doc(id).get();
+    if (!snapshot.exists) {
+      return null;
+    }
+    return mapRagDocument(snapshot);
+  } catch {
+    throw new ChatbotError(
+      "bad_request:database",
+      "Failed to get rag document by id"
     );
   }
 }

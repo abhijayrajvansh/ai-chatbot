@@ -11,6 +11,14 @@ export type RetrievedContextChunk = {
   content: string;
 };
 
+function parsePositiveInt(value: string | undefined, fallback: number) {
+  const parsed = Number.parseInt(value ?? "", 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+  return parsed;
+}
+
 function tokenize(text: string) {
   return new Set(
     text
@@ -25,7 +33,7 @@ function tokenize(text: string) {
 export async function getRelevantContextForUser({
   userId,
   query,
-  limit = 6,
+  limit = parsePositiveInt(process.env.RAG_TOP_K, 6),
 }: {
   userId: string;
   query: string;

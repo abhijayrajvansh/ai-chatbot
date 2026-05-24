@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { auth } from "@/app/(auth)/auth";
 import {
+  getRagDocumentById,
   getRagDocumentByChecksumForUser,
   getRagDocumentsByUserId,
   saveRagDocument,
@@ -14,6 +15,9 @@ import {
   ingestRagDocument,
   isSupportedRagFileType,
 } from "@/lib/rag/ingest";
+import { enqueueRagIngestJob } from "@/lib/rag/queue";
+import { uploadRagFileToStorage } from "@/lib/rag/storage";
+import { processRagIngestJob } from "@/lib/rag/worker";
 import { generateUUID } from "@/lib/utils";
 
 const UploadSchema = z.object({
@@ -118,28 +122,75 @@ export async function POST(request: Request) {
       mimeType: uploadedFile.type,
       size: uploadedFile.size,
       checksum,
-      status: "processing",
+      status: "queued",
+      queuedAt: new Date(),
+      attempts: 0,
       chunkCount: 0,
       error: null,
+      errorCode: null,
       userId: session.user.id,
     });
 
-    const ingested = await ingestRagDocument({
-      file: uploadedFile,
+    const { storagePath } = await uploadRagFileToStorage({
       userId: session.user.id,
-      documentId: draftDocumentId,
+      ragDocumentId,
+      file: uploadedFile,
     });
 
     await updateRagDocumentById({
       id: ragDocumentId,
-      documentId: ingested.documentId,
-      status: "ready",
-      chunkCount: ingested.chunkCount,
+      storagePath,
+      status: "queued",
+      queuedAt: new Date(),
       error: null,
+      errorCode: null,
     });
 
-    const documents = await getRagDocumentsByUserId({ userId: session.user.id });
-    const ragDocument = documents.find((document) => document.id === ragDocumentId);
+    const queued = await enqueueRagIngestJob({
+      jobId: generateUUID(),
+      ragDocumentId,
+      userId: session.user.id,
+      documentId: draftDocumentId,
+      storagePath,
+      mimeType: uploadedFile.type,
+      checksum,
+      enqueuedAt: new Date().toISOString(),
+    });
+
+    if (!queued) {
+      const buffer = Buffer.from(await uploadedFile.arrayBuffer());
+      const ingested = await ingestRagDocument({
+        fileName: uploadedFile.name,
+        mimeType: uploadedFile.type,
+        fileSize: uploadedFile.size,
+        fileBuffer: buffer,
+        userId: session.user.id,
+        documentId: draftDocumentId,
+      });
+
+      await updateRagDocumentById({
+        id: ragDocumentId,
+        documentId: ingested.documentId,
+        status: "ready",
+        chunkCount: ingested.chunkCount,
+        readyAt: new Date(),
+        error: null,
+        errorCode: null,
+      });
+    } else {
+      void processRagIngestJob({
+        jobId: generateUUID(),
+        ragDocumentId,
+        userId: session.user.id,
+        documentId: draftDocumentId,
+        storagePath,
+        mimeType: uploadedFile.type,
+        checksum,
+        enqueuedAt: new Date().toISOString(),
+      }).catch(() => null);
+    }
+
+    const ragDocument = await getRagDocumentById({ id: ragDocumentId });
 
     return Response.json(
       {
@@ -147,18 +198,25 @@ export async function POST(request: Request) {
           ragDocument ??
           ({
             id: ragDocumentId,
-            documentId: ingested.documentId,
-            title: ingested.fileName,
-            fileName: ingested.fileName,
-            mimeType: ingested.mimeType,
-            size: ingested.size,
+            documentId: draftDocumentId,
+            title: uploadedFile.name,
+            fileName: uploadedFile.name,
+            mimeType: uploadedFile.type,
+            size: uploadedFile.size,
             checksum,
-            status: "ready",
+            storagePath,
+            status: "queued",
             error: null,
+            errorCode: null,
+            queuedAt: new Date(),
+            processingStartedAt: null,
+            readyAt: null,
+            failedAt: null,
+            attempts: 0,
             embeddingModel:
               process.env.OPENAI_EMBEDDING_MODEL?.trim() ??
               "text-embedding-3-small",
-            chunkCount: ingested.chunkCount,
+            chunkCount: 0,
             userId: session.user.id,
             createdAt: new Date(),
             updatedAt: new Date(),
@@ -169,9 +227,7 @@ export async function POST(request: Request) {
   } catch (error) {
     const cause =
       error instanceof Error ? error.message : "Failed to process request";
-    const isValidationError =
-      cause.includes("readable text") || cause.includes("chunk");
-
+    const isValidationError = cause.includes("readable text") || cause.includes("chunk");
     const code = isValidationError ? "extract_failed" : "index_failed";
 
     if (ragDocumentId) {
@@ -179,6 +235,8 @@ export async function POST(request: Request) {
         id: ragDocumentId,
         status: "failed",
         error: cause,
+        errorCode: code,
+        failedAt: new Date(),
       }).catch(() => null);
     }
 

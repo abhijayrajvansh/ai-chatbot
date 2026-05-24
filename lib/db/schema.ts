@@ -82,8 +82,15 @@ export type RagDocument = {
   mimeType: string;
   size: number;
   checksum: string;
+  storagePath: string | null;
   status: "queued" | "processing" | "ready" | "failed";
   error: string | null;
+  errorCode: string | null;
+  queuedAt: Date | null;
+  processingStartedAt: Date | null;
+  readyAt: Date | null;
+  failedAt: Date | null;
+  attempts: number;
   embeddingModel: string;
   chunkCount: number;
   userId: string;
