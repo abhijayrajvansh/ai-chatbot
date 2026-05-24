@@ -14,10 +14,10 @@ Still in use:
 | --- | --- | --- |
 | `REDIS_URL` | Redis | Production IP rate limiting and resumable streams |
 
-Firestore collections are namespaced by `NEXT_PUBLIC_DATABASE_ENV`. With:
+Firestore database selection is controlled by `NEXT_PUBLIC_DATABASE_ENV`. With:
 
 ```env
 NEXT_PUBLIC_DATABASE_ENV=brackets
 ```
 
-the app writes collections such as `brackets_users`, `brackets_chats`, `brackets_messages`, `brackets_documents`, and `brackets_suggestions`.
+the app writes to the `brackets` Firestore database using unprefixed collections such as `users`, `chats`, `messages`, `documents`, and `suggestions`.

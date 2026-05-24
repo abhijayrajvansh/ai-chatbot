@@ -32,6 +32,16 @@ function getStorageBucket() {
   );
 }
 
+function getFirestoreDatabaseId() {
+  const databaseEnv = process.env.NEXT_PUBLIC_DATABASE_ENV?.trim();
+
+  if (!databaseEnv) {
+    return undefined;
+  }
+
+  return databaseEnv === "default" ? "(default)" : databaseEnv;
+}
+
 function initializeFirebaseAdminApp(): App {
   const existingApp = getApps()[0];
   if (existingApp) {
@@ -66,7 +76,10 @@ export function firebaseAuth() {
 }
 
 export function firestore() {
-  return getFirestore(firebaseAdminApp());
+  const databaseId = getFirestoreDatabaseId();
+  return databaseId
+    ? getFirestore(firebaseAdminApp(), databaseId)
+    : getFirestore(firebaseAdminApp());
 }
 
 export function firebaseStorageBucket() {

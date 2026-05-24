@@ -81,6 +81,22 @@ function clean<T extends Record<string, unknown>>(value: T) {
   ) as T;
 }
 
+function cleanDeep(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(cleanDeep);
+  }
+
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .filter(([, item]) => item !== undefined)
+        .map(([key, item]) => [key, cleanDeep(item)])
+    );
+  }
+
+  return value;
+}
+
 function mapChat(snapshot: DocumentSnapshot<DocumentData>): Chat {
   const data = snapshot.data() ?? {};
   return {
@@ -466,12 +482,19 @@ export async function saveMessages({ messages }: { messages: DBMessage[] }) {
 
     for (const item of messages) {
       const ref = firestore().collection(MESSAGES).doc(item.id);
-      batch.set(ref, clean({ ...item }));
+      batch.set(
+        ref,
+        clean({
+          ...item,
+          parts: cleanDeep(item.parts),
+          attachments: cleanDeep(item.attachments),
+        })
+      );
     }
 
     return await batch.commit();
-  } catch {
-    throw new ChatbotError("bad_request:database", "Failed to save messages");
+  } catch (error) {
+    throw new ChatbotError("bad_request:database", getErrorCause(error));
   }
 }
 
@@ -491,17 +514,36 @@ export async function updateMessage({
 
 export async function getMessagesByChatId({ id }: { id: string }) {
   try {
-    const snapshot = await firestore()
-      .collection(MESSAGES)
-      .where("chatId", "==", id)
-      .orderBy("createdAt", "asc")
-      .get();
+    let messages: DBMessage[];
 
-    return snapshot.docs.map(mapMessage);
-  } catch {
+    try {
+      const snapshot = await firestore()
+        .collection(MESSAGES)
+        .where("chatId", "==", id)
+        .orderBy("createdAt", "asc")
+        .get();
+
+      messages = snapshot.docs.map(mapMessage);
+    } catch (queryError) {
+      if (!isFirestoreMissingIndexError(queryError)) {
+        throw queryError;
+      }
+
+      const fallbackSnapshot = await firestore()
+        .collection(MESSAGES)
+        .where("chatId", "==", id)
+        .get();
+
+      messages = fallbackSnapshot.docs
+        .map(mapMessage)
+        .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+    }
+
+    return messages;
+  } catch (error) {
     throw new ChatbotError(
       "bad_request:database",
-      "Failed to get messages by chat id"
+      getErrorCause(error)
     );
   }
 }
@@ -854,22 +896,38 @@ export async function getMessageCountByUserId({
 
     const counts = await Promise.all(
       chatsSnapshot.docs.map(async (chatDoc) => {
-        const snapshot = await firestore()
-          .collection(MESSAGES)
-          .where("chatId", "==", chatDoc.id)
-          .where("role", "==", "user")
-          .where("createdAt", ">=", cutoffTime)
-          .get();
+        try {
+          const snapshot = await firestore()
+            .collection(MESSAGES)
+            .where("chatId", "==", chatDoc.id)
+            .where("role", "==", "user")
+            .where("createdAt", ">=", cutoffTime)
+            .get();
 
-        return snapshot.size;
+          return snapshot.size;
+        } catch (queryError) {
+          if (!isFirestoreMissingIndexError(queryError)) {
+            throw queryError;
+          }
+
+          const fallbackSnapshot = await firestore()
+            .collection(MESSAGES)
+            .where("chatId", "==", chatDoc.id)
+            .where("role", "==", "user")
+            .get();
+
+          return fallbackSnapshot.docs
+            .map(mapMessage)
+            .filter((message) => message.createdAt >= cutoffTime).length;
+        }
       })
     );
 
     return counts.reduce((total, current) => total + current, 0);
-  } catch {
+  } catch (error) {
     throw new ChatbotError(
       "bad_request:database",
-      "Failed to get message count by user id"
+      getErrorCause(error)
     );
   }
 }

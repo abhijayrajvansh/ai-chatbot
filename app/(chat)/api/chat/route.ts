@@ -110,7 +110,9 @@ export async function POST(request: Request) {
     }
 
     const [, session] = await Promise.all([
-      checkBotId().catch(() => null),
+      process.env.NODE_ENV === "production"
+        ? checkBotId().catch(() => null)
+        : Promise.resolve(null),
       auth(),
     ]);
 

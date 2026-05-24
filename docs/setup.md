@@ -45,7 +45,8 @@ FIREBASE_SERVICE_ACCOUNT_CLIENT_X509_CERT_URL=
 FIREBASE_SERVICE_ACCOUNT_UNIVERSE_DOMAIN=googleapis.com
 ```
 
-`NEXT_PUBLIC_DATABASE_ENV` namespaces Firestore collections. For example, `brackets` creates collections like `brackets_users`, `brackets_chats`, and `brackets_messages`.
+`NEXT_PUBLIC_DATABASE_ENV` selects the Firestore database ID (`default`, `brackets`, `production`).
+Collections are unprefixed and stored as `users`, `chats`, `messages`, `documents`, etc.
 
 ## LLM Provider
 
