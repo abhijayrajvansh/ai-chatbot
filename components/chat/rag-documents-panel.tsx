@@ -4,6 +4,16 @@ import { FileTextIcon, UploadIcon } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import useSWR from "swr";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { cn, fetcher } from "@/lib/utils";
 
@@ -44,6 +54,12 @@ export function RagDocumentsPanel() {
   const [isDragging, setIsDragging] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  const [pendingDelete, setPendingDelete] = useState<{
+    mode: "single" | "failed" | "all";
+    id?: string;
+    title?: string;
+  } | null>(null);
 
   const { data, mutate } = useSWR<{ documents: RagDocument[] }>(
     `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/api/rag-documents`,
@@ -155,6 +171,24 @@ export function RagDocumentsPanel() {
     [mutate]
   );
 
+  const openDeleteDialog = useCallback(
+    (mode: "single" | "failed" | "all", id?: string, title?: string) => {
+      setPendingDelete({ mode, id, title });
+      setShowDeleteDialog(true);
+    },
+    []
+  );
+
+  const confirmDelete = useCallback(async () => {
+    if (!pendingDelete) {
+      return;
+    }
+
+    setShowDeleteDialog(false);
+    await deleteDocuments(pendingDelete.mode, pendingDelete.id);
+    setPendingDelete(null);
+  }, [deleteDocuments, pendingDelete]);
+
   return (
     <div className="absolute inset-0 z-30 bg-background">
       <div className="mx-auto flex h-full w-full max-w-5xl flex-col gap-6 px-4 py-6 md:px-8">
@@ -232,11 +266,7 @@ export function RagDocumentsPanel() {
         <div className="flex items-center justify-end gap-2">
           <Button
             disabled={isDeleting || documents.length === 0}
-            onClick={() => {
-              if (window.confirm("Delete all uploaded RAG documents?")) {
-                void deleteDocuments("all");
-              }
-            }}
+            onClick={() => openDeleteDialog("all")}
             size="sm"
             variant="outline"
           >
@@ -246,11 +276,7 @@ export function RagDocumentsPanel() {
             disabled={
               isDeleting || !documents.some((document) => document.status === "failed")
             }
-            onClick={() => {
-              if (window.confirm("Delete all failed RAG documents?")) {
-                void deleteDocuments("failed");
-              }
-            }}
+            onClick={() => openDeleteDialog("failed")}
             size="sm"
             variant="outline"
           >
@@ -292,11 +318,7 @@ export function RagDocumentsPanel() {
                   </div>
                   <Button
                     disabled={isDeleting}
-                    onClick={() => {
-                      if (window.confirm(`Delete "${doc.title}"?`)) {
-                        void deleteDocuments("single", doc.id);
-                      }
-                    }}
+                    onClick={() => openDeleteDialog("single", doc.id, doc.title)}
                     size="sm"
                     variant="outline"
                   >
@@ -308,6 +330,33 @@ export function RagDocumentsPanel() {
           )}
         </div>
       </div>
+
+      <AlertDialog onOpenChange={setShowDeleteDialog} open={showDeleteDialog}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete document(s)?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {pendingDelete?.mode === "single"
+                ? `This will permanently delete "${pendingDelete.title ?? "this document"}" and its indexed data.`
+                : pendingDelete?.mode === "failed"
+                  ? "This will permanently delete all failed uploaded documents and their indexed data."
+                  : "This will permanently delete all uploaded documents and their indexed data."}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel
+              onClick={() => {
+                setPendingDelete(null);
+              }}
+            >
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction onClick={() => void confirmDelete()}>
+              Continue
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
