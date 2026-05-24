@@ -18,6 +18,7 @@ import type {
   DBMessage,
   Document,
   DocumentChunk,
+  RagDocument,
   Stream,
   Suggestion,
   Vote,
@@ -30,6 +31,7 @@ const {
   votes: VOTES,
   documents: DOCUMENTS,
   documentChunks: DOCUMENT_CHUNKS,
+  ragDocuments: RAG_DOCUMENTS,
   suggestions: SUGGESTIONS,
   streams: STREAMS,
 } = firebaseCollections;
@@ -179,6 +181,21 @@ function mapStream(snapshot: DocumentSnapshot<DocumentData>): Stream {
   return {
     id: String(data.id ?? snapshot.id),
     chatId: String(data.chatId ?? ""),
+    createdAt: toDate(data.createdAt),
+  };
+}
+
+function mapRagDocument(snapshot: DocumentSnapshot<DocumentData>): RagDocument {
+  const data = snapshot.data() ?? {};
+  return {
+    id: String(data.id ?? snapshot.id),
+    documentId: String(data.documentId ?? ""),
+    title: String(data.title ?? ""),
+    fileName: String(data.fileName ?? ""),
+    mimeType: String(data.mimeType ?? ""),
+    size: Number(data.size ?? 0),
+    chunkCount: Number(data.chunkCount ?? 0),
+    userId: String(data.userId ?? ""),
     createdAt: toDate(data.createdAt),
   };
 }
@@ -985,6 +1002,67 @@ export async function getDocumentChunksByUserId({
     throw new ChatbotError(
       "bad_request:database",
       "Failed to get document chunks by user id"
+    );
+  }
+}
+
+export async function getRagDocumentsByUserId({ userId }: { userId: string }) {
+  try {
+    const snapshot = await firestore()
+      .collection(RAG_DOCUMENTS)
+      .where("userId", "==", userId)
+      .orderBy("createdAt", "desc")
+      .get();
+
+    return snapshot.docs.map(mapRagDocument);
+  } catch {
+    throw new ChatbotError(
+      "bad_request:database",
+      "Failed to get rag documents by user id"
+    );
+  }
+}
+
+export async function saveRagDocument({
+  documentId,
+  title,
+  fileName,
+  mimeType,
+  size,
+  chunkCount,
+  userId,
+}: {
+  documentId: string;
+  title: string;
+  fileName: string;
+  mimeType: string;
+  size: number;
+  chunkCount: number;
+  userId: string;
+}) {
+  try {
+    const id = generateUUID();
+    const createdAt = new Date();
+
+    const item = {
+      id,
+      documentId,
+      title,
+      fileName,
+      mimeType,
+      size,
+      chunkCount,
+      userId,
+      createdAt,
+    };
+
+    await firestore().collection(RAG_DOCUMENTS).doc(id).set(item);
+
+    return item;
+  } catch {
+    throw new ChatbotError(
+      "bad_request:database",
+      "Failed to save rag document"
     );
   }
 }

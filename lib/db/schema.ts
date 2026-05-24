@@ -73,3 +73,15 @@ export type Stream = {
   chatId: string;
   createdAt: Date;
 };
+
+export type RagDocument = {
+  id: string;
+  documentId: string;
+  title: string;
+  fileName: string;
+  mimeType: string;
+  size: number;
+  chunkCount: number;
+  userId: string;
+  createdAt: Date;
+};
