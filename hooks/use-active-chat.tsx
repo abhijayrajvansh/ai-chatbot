@@ -78,6 +78,7 @@ export function ActiveChatProvider({ children }: { children: ReactNode }) {
   }, [currentModelId]);
 
   const [input, setInput] = useState("");
+  const [isHydratingHistory, setIsHydratingHistory] = useState(false);
   const { data: chatData, isLoading } = useSWR(
     isNewChat
       ? null
@@ -171,28 +172,51 @@ export function ActiveChatProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (isNewChat) {
+      setIsHydratingHistory(false);
       return;
     }
 
-    if (chatData?.messages) {
-      setMessages((currentMessages) => {
-        // Do not clobber optimistic/in-flight UI messages while the model is running.
-        if (status === "submitted" || status === "streaming") {
-          return currentMessages;
+    let isCancelled = false;
+    const controller = new AbortController();
+
+    const loadChatMessages = async () => {
+      setIsHydratingHistory(true);
+      try {
+        const response = await fetch(
+          `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/api/messages?chatId=${chatId}`,
+          {
+            signal: controller.signal,
+            cache: "no-store",
+          }
+        );
+
+        if (!response.ok) {
+          return;
         }
 
-        // Keep current state if fetched history is clearly older/partial.
-        if (
-          currentMessages.length > 0 &&
-          chatData.messages.length < currentMessages.length
-        ) {
-          return currentMessages;
-        }
+        const payload = (await response.json()) as {
+          messages?: ChatMessage[];
+        };
 
-        return chatData.messages;
-      });
-    }
-  }, [chatId, chatData?.messages, isNewChat, setMessages, status]);
+        if (!isCancelled) {
+          setMessages(payload.messages ?? []);
+        }
+      } catch {
+        // Non-fatal; SWR and existing state can still recover on next revalidation.
+      } finally {
+        if (!isCancelled) {
+          setIsHydratingHistory(false);
+        }
+      }
+    };
+
+    void loadChatMessages();
+
+    return () => {
+      isCancelled = true;
+      controller.abort();
+    };
+  }, [chatId, isNewChat, setMessages]);
 
   const prevChatIdRef = useRef(chatId);
   useEffect(() => {
@@ -264,7 +288,7 @@ export function ActiveChatProvider({ children }: { children: ReactNode }) {
       setInput,
       visibilityType: visibility,
       isReadonly,
-      isLoading: !isNewChat && isLoading,
+      isLoading: !isNewChat && (isLoading || isHydratingHistory),
       votes,
       currentModelId,
       setCurrentModelId,
@@ -283,6 +307,7 @@ export function ActiveChatProvider({ children }: { children: ReactNode }) {
       isReadonly,
       isNewChat,
       isLoading,
+      isHydratingHistory,
       votes,
       currentModelId,
     ]
