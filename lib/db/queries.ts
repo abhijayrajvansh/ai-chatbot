@@ -1243,3 +1243,34 @@ export async function getRagDocumentById({ id }: { id: string }) {
     );
   }
 }
+
+export async function deleteRagDocumentById({
+  id,
+}: {
+  id: string;
+}) {
+  try {
+    const db = firestore();
+    const snapshot = await db.collection(RAG_DOCUMENTS).doc(id).get();
+    if (!snapshot.exists) {
+      return null;
+    }
+
+    const ragDocument = mapRagDocument(snapshot);
+
+    await Promise.all([
+      deleteQuery(db.collection(DOCUMENTS).where("id", "==", ragDocument.documentId)),
+      deleteQuery(
+        db.collection(DOCUMENT_CHUNKS).where("documentId", "==", ragDocument.documentId)
+      ),
+    ]);
+
+    await db.collection(RAG_DOCUMENTS).doc(id).delete();
+    return ragDocument;
+  } catch {
+    throw new ChatbotError(
+      "bad_request:database",
+      "Failed to delete rag document by id"
+    );
+  }
+}

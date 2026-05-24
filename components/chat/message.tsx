@@ -346,7 +346,7 @@ const PurePreviewMessage = ({
         {isAssistant && (
           <div className="flex h-[calc(13px*1.65)] shrink-0 items-center">
             <div className="flex size-7 items-center justify-center rounded-lg bg-muted/60 text-muted-foreground ring-1 ring-border/50">
-              <SparklesIcon size={13} />
+              <img src="/images/brackets-logo.jpeg" alt="bai" className="rounded-lg"/>
             </div>
           </div>
         )}

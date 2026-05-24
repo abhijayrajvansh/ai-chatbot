@@ -46,3 +46,13 @@ export async function downloadRagFileFromStorage({
   const [buffer] = await storageFile.download();
   return buffer;
 }
+
+export async function deleteRagFileFromStorage({
+  storagePath,
+}: {
+  storagePath: string;
+}) {
+  const bucket = firebaseStorageBucket();
+  const storageFile = bucket.file(storagePath);
+  await storageFile.delete({ ignoreNotFound: true });
+}

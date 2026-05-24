@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { auth } from "@/app/(auth)/auth";
 import {
+  deleteRagDocumentById,
   getRagDocumentById,
   getRagDocumentByChecksumForUser,
   getRagDocumentsByUserId,
@@ -16,7 +17,8 @@ import {
   isSupportedRagFileType,
 } from "@/lib/rag/ingest";
 import { enqueueRagIngestJob } from "@/lib/rag/queue";
-import { uploadRagFileToStorage } from "@/lib/rag/storage";
+import { deleteRagFileFromStorage, uploadRagFileToStorage } from "@/lib/rag/storage";
+import { deleteDocumentChunksFromVectorStore } from "@/lib/rag/vector";
 import { processRagIngestJob } from "@/lib/rag/worker";
 import { generateUUID } from "@/lib/utils";
 
@@ -24,12 +26,17 @@ const UploadSchema = z.object({
   file: z
     .instanceof(Blob)
     .refine((file) => file.size > 0, { message: "File is empty" })
-    .refine((file) => file.size <= 5 * 1024 * 1024, {
-      message: "File size should be less than 5MB",
+    .refine((file) => file.size <= 50 * 1024 * 1024, {
+      message: "File size should be less than 50MB",
     })
     .refine((file) => isSupportedRagFileType(file.type), {
       message: "Supported types: pdf, xls, xlsx, txt, md, csv, json",
     }),
+});
+
+const DeleteSchema = z.object({
+  id: z.string().optional(),
+  mode: z.enum(["single", "failed", "all"]).default("single"),
 });
 
 export async function GET() {
@@ -244,5 +251,74 @@ export async function POST(request: Request) {
       { error: cause, code },
       { status: isValidationError ? 400 : 500 }
     );
+  }
+}
+
+export async function DELETE(request: Request) {
+  if (isLocalUiOnlyMode) {
+    return Response.json({ deletedCount: 0 }, { status: 200 });
+  }
+
+  const session = await auth();
+
+  if (!session?.user) {
+    return new ChatbotError("unauthorized:document").toResponse();
+  }
+
+  let body: unknown = {};
+  try {
+    body = await request.json();
+  } catch {
+    body = {};
+  }
+
+  const parsed = DeleteSchema.safeParse(body);
+  if (!parsed.success) {
+    return NextResponse.json({ error: "Invalid delete request" }, { status: 400 });
+  }
+
+  const { id, mode } = parsed.data;
+
+  try {
+    const allDocuments = await getRagDocumentsByUserId({ userId: session.user.id });
+    const selected =
+      mode === "all"
+        ? allDocuments
+        : mode === "failed"
+          ? allDocuments.filter((document) => document.status === "failed")
+          : allDocuments.filter((document) => document.id === id);
+
+    if (mode === "single" && selected.length === 0) {
+      return NextResponse.json({ error: "Document not found" }, { status: 404 });
+    }
+
+    let deletedCount = 0;
+
+    for (const document of selected) {
+      try {
+        await deleteDocumentChunksFromVectorStore({
+          userId: document.userId,
+          documentId: document.documentId,
+        });
+      } catch {
+        // Continue best-effort cleanup for Firestore/Storage even if vector delete fails.
+      }
+
+      if (document.storagePath) {
+        await deleteRagFileFromStorage({
+          storagePath: document.storagePath,
+        }).catch(() => null);
+      }
+
+      const deleted = await deleteRagDocumentById({ id: document.id });
+      if (deleted) {
+        deletedCount += 1;
+      }
+    }
+
+    return Response.json({ deletedCount }, { status: 200 });
+  } catch (error) {
+    const cause = error instanceof Error ? error.message : "Failed to delete";
+    return NextResponse.json({ error: cause }, { status: 500 });
   }
 }
