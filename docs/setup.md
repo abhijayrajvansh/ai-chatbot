@@ -65,6 +65,20 @@ LLM_MODEL=
 
 The app activates whichever model providers are available in env and uses LangChain for chat, title generation, and document RAG.
 
+## Upstash Vector (RAG Embeddings)
+
+To enable vector-based retrieval for uploaded RAG documents, configure:
+
+```env
+UPSTASH_VECTOR_REST_URL=
+UPSTASH_VECTOR_REST_TOKEN=
+OPENAI_EMBEDDING_MODEL=text-embedding-3-small
+```
+
+Notes:
+- Embeddings use `LLM_API_KEY`/`OPENAI_API_KEY` and optional `LLM_BASE_URL`/`OPENAI_BASE_URL`.
+- If Upstash vector variables are missing, retrieval falls back to token-overlap matching on stored chunks.
+
 ## Redis
 
 Redis remains optional and is only used for production rate limiting and resumable chat streams:

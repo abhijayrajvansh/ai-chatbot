@@ -1,4 +1,5 @@
 import { getDocumentChunksByUserId } from "@/lib/db/queries";
+import { queryDocumentChunksFromVectorStore } from "@/lib/rag/vector";
 import { getTextFromMessage } from "@/lib/utils";
 import type { ChatMessage } from "@/lib/types";
 
@@ -30,6 +31,16 @@ export async function getRelevantContextForUser({
   query: string;
   limit?: number;
 }) {
+  const vectorResults = await queryDocumentChunksFromVectorStore({
+    userId,
+    query,
+    limit,
+  });
+
+  if (vectorResults.length > 0) {
+    return vectorResults;
+  }
+
   const chunks = await getDocumentChunksByUserId({ userId });
 
   if (chunks.length === 0 || !query.trim()) {

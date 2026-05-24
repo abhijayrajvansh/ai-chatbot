@@ -1,14 +1,10 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { auth } from "@/app/(auth)/auth";
-import {
-  getRagDocumentsByUserId,
-  saveDocument,
-  saveRagDocument,
-} from "@/lib/db/queries";
+import { getRagDocumentsByUserId, saveRagDocument } from "@/lib/db/queries";
 import { ChatbotError } from "@/lib/errors";
 import { isLocalUiOnlyMode } from "@/lib/local-mode";
-import { chunkText } from "@/lib/rag/chunk";
+import { ingestRagDocument, isSupportedRagFileType } from "@/lib/rag/ingest";
 import { generateUUID } from "@/lib/utils";
 
 const UploadSchema = z.object({
@@ -18,18 +14,9 @@ const UploadSchema = z.object({
     .refine((file) => file.size <= 5 * 1024 * 1024, {
       message: "File size should be less than 5MB",
     })
-    .refine(
-      (file) =>
-        [
-          "text/plain",
-          "text/markdown",
-          "text/csv",
-          "application/json",
-        ].includes(file.type),
-      {
-        message: "Supported types: txt, md, csv, json",
-      }
-    ),
+    .refine((file) => isSupportedRagFileType(file.type), {
+      message: "Supported types: pdf, xls, xlsx, txt, md, csv, json",
+    }),
 });
 
 export async function GET() {
@@ -87,39 +74,19 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: errorMessage }, { status: 400 });
     }
 
-    const text = await file.text();
-    const normalizedText = text.trim();
-
-    if (!normalizedText) {
-      return NextResponse.json(
-        { error: "The uploaded file has no readable text" },
-        { status: 400 }
-      );
-    }
-
-    const fileName = ((formData.get("file") as File).name || "Untitled")
-      .replace(/[^a-zA-Z0-9._ -]/g, "_")
-      .trim();
-
-    const documentId = generateUUID();
-
-    await saveDocument({
-      id: documentId,
-      title: fileName,
-      kind: "text",
-      content: normalizedText,
+    const uploadedFile = formData.get("file") as File;
+    const ingested = await ingestRagDocument({
+      file: uploadedFile,
       userId: session.user.id,
     });
 
-    const chunkCount = chunkText(normalizedText).length;
-
     const ragDocument = await saveRagDocument({
-      documentId,
-      title: fileName,
-      fileName,
-      mimeType: file.type,
-      size: file.size,
-      chunkCount,
+      documentId: ingested.documentId,
+      title: ingested.fileName,
+      fileName: ingested.fileName,
+      mimeType: ingested.mimeType,
+      size: ingested.size,
+      chunkCount: ingested.chunkCount,
       userId: session.user.id,
     });
 
