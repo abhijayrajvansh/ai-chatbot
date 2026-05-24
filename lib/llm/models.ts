@@ -31,15 +31,6 @@ const customOpenAiCompatibleConfigured = Boolean(
 
 export const chatModels: ChatModel[] = [
   {
-    id: "openai/gpt-4o-mini",
-    name: "GPT-4o mini",
-    provider: "openai",
-    description: "Fast OpenAI model for everyday chat and drafting",
-    supportsTools: true,
-    supportsVision: true,
-    supportsReasoning: false,
-  },
-  {
     id: "openai/gpt-4.1-mini",
     name: "GPT-4.1 mini",
     provider: "openai",
