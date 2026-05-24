@@ -1,4 +1,4 @@
-# RAG Architecture Plan (Upstash Vector + LangChain)
+# RAG Architecture Plan (Firebase Storage + Queue + LangChain + Upstash Vector)
 
 ## 1) Why uploads are failing right now
 
@@ -20,14 +20,16 @@ Impact:
 
 For each user:
 1. User uploads document(s): PDF, DOCX/TXT/MD/CSV/XLS/XLSX/JSON.
-2. System extracts clean text per document.
-3. System chunks text with stable chunk IDs.
-4. System embeds chunks with configured embedding model.
-5. System upserts embeddings + metadata to Upstash Vector.
-6. User asks a chat question.
-7. System embeds query, performs vector retrieval with user-scoped filtering.
-8. System builds context from top chunks and answers via chat model.
-9. System returns answer plus optional citations/chunk sources.
+2. File is stored in Firebase Storage.
+3. Upload API writes a queued ingestion job in Redis and marks Firestore status as `queued`.
+4. Worker dequeues jobs and extracts clean text per document.
+5. Worker chunks text with stable chunk IDs.
+6. Worker embeds chunks with configured embedding model.
+7. Worker upserts embeddings + metadata to Upstash Vector.
+8. Worker marks Firestore status `ready` (or `failed` with error code).
+9. User asks a chat question.
+10. System embeds query, retrieves user-scoped chunks, builds context, and calls chat model.
+11. System returns answer plus citations/chunk sources.
 
 ---
 
@@ -35,13 +37,17 @@ For each user:
 
 ### 3.1 Storage model
 
-Keep two layers:
+Keep three layers:
 
 1. **Metadata store (Firestore)**
 - `rag_documents` collection
 - Tracks document-level ingest lifecycle and status.
 
-2. **Vector store (Upstash Vector)**
+2. **Queue + worker state (Redis)**
+- Job queue for async indexing.
+- Retries, backoff, and transient failure handling.
+
+3. **Vector store (Upstash Vector)**
 - One vector per chunk.
 - Metadata includes `userId`, `documentId`, `chunkIndex`, `title`, `mimeType`, `checksum`, `ingestedAt`.
 
@@ -65,7 +71,24 @@ Keep two layers:
 Optional audit collection:
 - `rag_document_jobs` for per-step timestamps and retry counters.
 
-### 3.3 Upstash vector keying
+### 3.3 Queue contract (Redis)
+
+Job payload:
+- `jobId`
+- `userId`
+- `ragDocumentId` (Firestore document row id)
+- `storagePath` (Firebase Storage object path)
+- `mimeType`
+- `checksum`
+- `enqueuedAt`
+
+Queue processing:
+- API only enqueues and returns quickly.
+- Worker changes status `queued -> processing -> ready|failed`.
+- Retry transient errors (network/provider timeouts) up to `RAG_MAX_RETRIES`.
+- Move exhausted jobs to `failed` and preserve error code + reason in Firestore.
+
+### 3.4 Upstash vector keying
 
 Vector ID format:
 - `${userId}:${documentId}:${chunkIndex}`
@@ -92,10 +115,11 @@ Recommendation now:
 
 ### Step A: Upload acceptance
 - Validate file size/type at API boundary.
-- Store original file in Firebase Storage (or temp object store).
+- Store original file in Firebase Storage.
 - Create Firestore doc with `status=queued`.
+- Enqueue ingest job in Redis.
 
-### Step B: Text extraction
+### Step B: Text extraction (worker)
 - Parse by MIME type using dedicated loaders:
   - PDF: `pdfjs-dist` direct extraction (without fake worker dependency in Next route) or move parsing to background worker/service.
   - XLS/XLSX: `xlsx` sheet-to-text table serialization.
@@ -105,7 +129,7 @@ Important:
 - Normalize whitespace/newlines.
 - Preserve section boundaries where possible.
 
-### Step C: Chunking
+### Step C: Chunking (worker)
 - Use deterministic splitter:
   - `RecursiveCharacterTextSplitter` (LangChain) or current chunker with overlap.
 - Suggested defaults:
@@ -113,12 +137,12 @@ Important:
   - overlap: 120-200 chars
 - Store chunk count and chunk hash list.
 
-### Step D: Embedding
+### Step D: Embedding (worker)
 - Use one embedding model consistently (default: `text-embedding-3-small`).
 - Batch embeddings to avoid rate limit spikes.
 - Retry with exponential backoff for transient provider errors.
 
-### Step E: Vector upsert
+### Step E: Vector upsert (worker)
 - Upsert all chunk vectors to Upstash.
 - Validate count match: `upserted == chunkCount`.
 - Update Firestore status to `ready` on success.
@@ -135,14 +159,15 @@ Important:
 
 1. Build query from latest user message.
 2. Embed query with same embedding model used at ingest.
-3. Query Upstash with `topK` (start with 20-30 raw).
-4. Enforce user isolation:
+3. Query Upstash with `topK` (start with 24-40 raw).
+4. Restrict candidate scope to document IDs owned by current user and optionally to a narrowed working set from metadata filters (title/tags/recent docs).
+5. Enforce user isolation:
   - metadata filter where supported.
   - always app-side filter by `userId` as safety net.
-5. Rerank/select final `k` chunks (e.g., top 6).
-6. Construct prompt context blocks with title/chunk index.
-7. Generate answer with citations.
-8. If no relevant chunks:
+6. Rerank/select final `k` chunks (e.g., top 6-10).
+7. Construct prompt context blocks with title/chunk index.
+8. Generate answer with citations.
+9. If no relevant chunks:
   - respond clearly that no supporting document context was found.
 
 ---
@@ -214,8 +239,12 @@ Important:
 
 ## 9) Required environment variables
 
+- `NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET`
+- `FIREBASE_SERVICE_ACCOUNT_PROJECT_ID` (or full `FIREBASE_SERVICE_ACCOUNT_*` set used by repo)
 - `UPSTASH_VECTOR_REST_URL`
 - `UPSTASH_VECTOR_REST_TOKEN`
+- `UPSTASH_REDIS_REST_URL` (or `REDIS_URL` if using classic Redis queue client)
+- `UPSTASH_REDIS_REST_TOKEN` (if using Upstash Redis REST)
 - `OPENAI_API_KEY` or `LLM_API_KEY`
 - `OPENAI_EMBEDDING_MODEL` (default `text-embedding-3-small`)
 
@@ -223,6 +252,10 @@ Optional but recommended:
 - `RAG_TOP_K`
 - `RAG_CHUNK_SIZE`
 - `RAG_CHUNK_OVERLAP`
+- `RAG_RETRIEVAL_CANDIDATE_K`
+- `RAG_MAX_RETRIES`
+- `RAG_RETRY_BASE_MS`
+- `RAG_QUEUE_NAME`
 
 ---
 
@@ -255,4 +288,3 @@ What is missing/weak:
 - Reliable step-level errors and retries.
 - De-duplication/idempotency.
 - Citation-first answer UX.
-

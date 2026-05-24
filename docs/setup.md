@@ -85,7 +85,11 @@ Redis remains optional and is only used for production rate limiting and resumab
 
 ```env
 REDIS_URL=
+UPSTASH_REDIS_REST_URL=
+UPSTASH_REDIS_REST_TOKEN=
 ```
+
+For asynchronous RAG indexing queues, prefer Upstash Redis (`UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN`) or configure `REDIS_URL` with a worker-compatible queue client.
 
 ## Run
 
