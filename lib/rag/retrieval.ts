@@ -31,6 +31,24 @@ function tokenize(text: string) {
   );
 }
 
+function getTokenOverlapScore(query: string, content: string) {
+  const queryTokens = tokenize(query);
+  const contentTokens = tokenize(content);
+
+  if (queryTokens.size === 0 || contentTokens.size === 0) {
+    return 0;
+  }
+
+  let overlap = 0;
+  for (const token of queryTokens) {
+    if (contentTokens.has(token)) {
+      overlap += 1;
+    }
+  }
+
+  return overlap;
+}
+
 export async function getRelevantContextForUser({
   userId,
   query,
@@ -47,7 +65,17 @@ export async function getRelevantContextForUser({
   });
 
   if (vectorResults.length > 0) {
-    return vectorResults;
+    // Guardrail: do not return semantically-near but lexically-unrelated chunks.
+    // This avoids citing irrelevant documents for out-of-scope questions.
+    const filteredVectorResults = vectorResults.filter(
+      (chunk) => getTokenOverlapScore(query, chunk.content) >= 2
+    );
+
+    if (filteredVectorResults.length > 0) {
+      return filteredVectorResults;
+    }
+
+    return [];
   }
 
   const chunks = await getDocumentChunksByUserId({ userId });
