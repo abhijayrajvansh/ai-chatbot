@@ -12,6 +12,7 @@ import { cn } from "@/lib/utils";
 import { Artifact } from "./artifact";
 import { ChatHeader } from "./chat-header";
 import { DataStreamHandler } from "./data-stream-handler";
+import { Greeting } from "./greeting";
 import { submitEditedMessage } from "./message-editor";
 import { Messages } from "./messages";
 import { MultimodalInput } from "./multimodal-input";
@@ -143,7 +144,10 @@ export function ChatShell() {
             )}
 
             {isNewChatLayout && (
-              <div className="mx-auto flex h-full w-full max-w-4xl flex-col items-center px-2 pt-[56vh] pb-4 md:px-4">
+              <div className="mx-auto flex h-full w-full max-w-4xl flex-col items-center justify-center px-2 py-4 md:px-4">
+                <div className="mb-6">
+                  <Greeting />
+                </div>
                 <MultimodalInput
                   attachments={attachments}
                   chatId={chatId}
