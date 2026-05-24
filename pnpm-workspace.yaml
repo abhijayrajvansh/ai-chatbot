@@ -1,4 +1,5 @@
 allowBuilds:
   bufferutil: true
   esbuild: true
+  onnxruntime-node: true
   sharp: true
