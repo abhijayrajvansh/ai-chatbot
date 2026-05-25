@@ -22,6 +22,7 @@ export function LoginForm({
   const [email, setEmail] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [isPending, setIsPending] = useState(false);
+  const [error, setError] = useState("");
   const { update: updateSession } = useSession();
 
   useEffect(() => {
@@ -34,6 +35,7 @@ export function LoginForm({
     const nextEmail = String(formData.get("email") ?? "");
     const password = String(formData.get("password") ?? "");
     setEmail(nextEmail);
+    setError("");
 
     setIsPending(true);
     signInWithEmailAndPassword(firebaseClientAuth(), nextEmail, password)
@@ -43,7 +45,9 @@ export function LoginForm({
         router.refresh();
       })
       .catch(() => {
-        toast({ type: "error", description: "Invalid credentials!" });
+        const message = "Invalid email or password.";
+        setError(message);
+        toast({ type: "error", description: message });
       })
       .finally(() => {
         setIsPending(false);
@@ -63,6 +67,7 @@ export function LoginForm({
         <div className="space-y-2">
           <Label htmlFor="email">Email</Label>
           <Input
+            aria-invalid={Boolean(error)}
             autoComplete="email"
             autoFocus
             defaultValue={email}
@@ -78,6 +83,7 @@ export function LoginForm({
           <Label htmlFor="password">Password</Label>
           <div className="relative">
             <Input
+              aria-invalid={Boolean(error)}
               autoComplete="current-password"
               className="pr-10"
               id="password"
@@ -98,6 +104,11 @@ export function LoginForm({
               )}
             </button>
           </div>
+          {error ? (
+            <p className="text-sm text-destructive" role="alert">
+              {error}
+            </p>
+          ) : null}
         </div>
 
         <Button className="w-full" disabled={isPending} type="submit">

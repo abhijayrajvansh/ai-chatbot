@@ -103,7 +103,12 @@ export function FirebaseSessionProvider({
 
     const isLoginPage = pathname === "/login";
     if (status === "unauthenticated" && !isLoginPage) {
-      router.replace(`/login?redirectUrl=${encodeURIComponent(pathname || "/")}`);
+      const redirectUrl = pathname && pathname !== "/" ? pathname : "";
+      router.replace(
+        redirectUrl
+          ? `/login?redirectUrl=${encodeURIComponent(redirectUrl)}`
+          : "/login"
+      );
       return;
     }
 
