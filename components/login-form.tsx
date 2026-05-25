@@ -67,7 +67,7 @@ export function LoginForm({
         <div className="space-y-2">
           <Label htmlFor="email">Email</Label>
           <Input
-            aria-invalid={Boolean(error)}
+            aria-invalid={error ? true : undefined}
             autoComplete="email"
             autoFocus
             defaultValue={email}
@@ -83,7 +83,7 @@ export function LoginForm({
           <Label htmlFor="password">Password</Label>
           <div className="relative">
             <Input
-              aria-invalid={Boolean(error)}
+              aria-invalid={error ? true : undefined}
               autoComplete="current-password"
               className="pr-10"
               id="password"
