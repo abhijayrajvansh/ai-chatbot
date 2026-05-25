@@ -173,7 +173,20 @@ export async function POST(request: Request) {
   let ragDocumentId: string | null = null;
 
   try {
-    const formData = await request.formData();
+    let formData: FormData;
+    try {
+      formData = await request.formData();
+    } catch {
+      return NextResponse.json(
+        {
+          error:
+            "Upload request was not received as multipart form data. Please try uploading the file again.",
+          code: "invalid_upload_body",
+        },
+        { status: 400 }
+      );
+    }
+
     const file = formData.get("file") as Blob;
 
     const parsed = UploadSchema.safeParse({ file });

@@ -22,6 +22,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { firebaseClientAuth } from "@/lib/firebase/client";
 import { cn, fetcher } from "@/lib/utils";
 
 type RagDocument = {
@@ -65,6 +66,11 @@ function getDocumentMeta(doc: RagDocument) {
       : `${doc.chunkCount} chunks`;
 
   return `${provider} • ${formatBytes(doc.size)} • ${new Date(doc.createdAt).toLocaleString()}`;
+}
+
+async function getAuthorizationHeader(): Promise<Record<string, string>> {
+  const token = await firebaseClientAuth().currentUser?.getIdToken();
+  return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
 export function RagDocumentsPanel() {
@@ -112,6 +118,7 @@ export function RagDocumentsPanel() {
     async (file: File) => {
       const formData = new FormData();
       formData.append("file", file);
+      const authHeader = await getAuthorizationHeader();
 
       await new Promise<void>((resolve, reject) => {
         const xhr = new XMLHttpRequest();
@@ -119,6 +126,9 @@ export function RagDocumentsPanel() {
           "POST",
           `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/api/rag-documents`
         );
+        for (const [key, value] of Object.entries(authHeader)) {
+          xhr.setRequestHeader(key, value);
+        }
 
         xhr.upload.onprogress = (event) => {
           if (!event.lengthComputable) {
@@ -203,11 +213,12 @@ export function RagDocumentsPanel() {
     async (mode: "single" | "failed" | "all", id?: string) => {
       setIsDeleting(true);
       try {
+        const authHeader = await getAuthorizationHeader();
         const response = await fetch(
           `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/api/rag-documents`,
           {
             method: "DELETE",
-            headers: { "Content-Type": "application/json" },
+            headers: { "Content-Type": "application/json", ...authHeader },
             body: JSON.stringify({ mode, id }),
           }
         );
