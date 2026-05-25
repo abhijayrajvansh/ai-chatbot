@@ -97,7 +97,7 @@ export function LoginForm({
         </div>
 
         <Button className="w-full" disabled={isPending} type="submit">
-          {isPending ? "Logging in..." : "Login with guest user"}
+          {isPending ? "Logging in..." : "Login with"}
         </Button>
       </form>
 
