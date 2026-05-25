@@ -15,6 +15,13 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { cn, fetcher } from "@/lib/utils";
 
 type RagDocument = {
@@ -55,6 +62,13 @@ export function RagDocumentsPanel() {
   const [isUploading, setIsUploading] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
+  const [showUploadDialog, setShowUploadDialog] = useState(false);
+  const [uploadFileName, setUploadFileName] = useState("");
+  const [uploadLoadedBytes, setUploadLoadedBytes] = useState(0);
+  const [uploadTotalBytes, setUploadTotalBytes] = useState(0);
+  const [uploadPercent, setUploadPercent] = useState(0);
+  const [uploadStartedAt, setUploadStartedAt] = useState<number | null>(null);
+  const [uploadElapsedSeconds, setUploadElapsedSeconds] = useState(0);
   const [pendingDelete, setPendingDelete] = useState<{
     mode: "single" | "failed" | "all";
     id?: string;
@@ -93,26 +107,69 @@ export function RagDocumentsPanel() {
     return () => clearTimeout(timer);
   }, [hasPendingDocuments]);
 
+  useEffect(() => {
+    if (!showUploadDialog || uploadStartedAt === null) {
+      return;
+    }
+
+    setUploadElapsedSeconds(Math.max(0, Math.floor((Date.now() - uploadStartedAt) / 1000)));
+    const timer = setInterval(() => {
+      setUploadElapsedSeconds(Math.max(0, Math.floor((Date.now() - uploadStartedAt) / 1000)));
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [showUploadDialog, uploadStartedAt]);
+
   const uploadFile = useCallback(
     async (file: File) => {
       const formData = new FormData();
       formData.append("file", file);
 
-      const response = await fetch(
-        `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/api/rag-documents`,
-        {
-          method: "POST",
-          body: formData,
-        }
-      );
+      await new Promise<void>((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open(
+          "POST",
+          `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/api/rag-documents`
+        );
 
-      if (!response.ok) {
-        const payload = (await response.json().catch(() => null)) as
-          | { error?: string }
-          | null;
-        throw new Error(payload?.error ?? "Upload failed");
-      }
+        xhr.upload.onprogress = (event) => {
+          if (!event.lengthComputable) {
+            return;
+          }
 
+          const nextLoaded = event.loaded;
+          const nextTotal = event.total;
+          const nextPercent = Math.min(100, Math.round((nextLoaded / nextTotal) * 100));
+
+          setUploadLoadedBytes(nextLoaded);
+          setUploadTotalBytes(nextTotal);
+          setUploadPercent(nextPercent);
+        };
+
+        xhr.onerror = () => {
+          reject(new Error("Upload failed"));
+        };
+
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            resolve();
+            return;
+          }
+
+          try {
+            const payload = JSON.parse(xhr.responseText) as { error?: string };
+            reject(new Error(payload.error ?? "Upload failed"));
+          } catch {
+            reject(new Error("Upload failed"));
+          }
+        };
+
+        xhr.send(formData);
+      });
+
+      setUploadPercent(100);
+      setUploadLoadedBytes(file.size);
+      setUploadTotalBytes(file.size);
       await mutate();
     },
     [mutate]
@@ -124,8 +181,15 @@ export function RagDocumentsPanel() {
       if (fileArray.length === 0) return;
 
       setIsUploading(true);
+      setShowUploadDialog(true);
+      setUploadStartedAt(Date.now());
+      setUploadElapsedSeconds(0);
       try {
         for (const file of fileArray) {
+          setUploadFileName(file.name);
+          setUploadLoadedBytes(0);
+          setUploadTotalBytes(file.size);
+          setUploadPercent(0);
           await uploadFile(file);
         }
         toast.success("Document upload complete");
@@ -135,6 +199,13 @@ export function RagDocumentsPanel() {
         );
       } finally {
         setIsUploading(false);
+        setShowUploadDialog(false);
+        setUploadFileName("");
+        setUploadLoadedBytes(0);
+        setUploadTotalBytes(0);
+        setUploadPercent(0);
+        setUploadStartedAt(null);
+        setUploadElapsedSeconds(0);
       }
     },
     [uploadFile]
@@ -357,6 +428,47 @@ export function RagDocumentsPanel() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <Dialog
+        onOpenChange={(open) => {
+          if (!isUploading && !open) {
+            setShowUploadDialog(false);
+          }
+        }}
+        open={showUploadDialog}
+      >
+        <DialogContent
+          onEscapeKeyDown={(event) => event.preventDefault()}
+          onInteractOutside={(event) => event.preventDefault()}
+          showCloseButton={false}
+        >
+          <DialogHeader>
+            <DialogTitle>Uploading document...</DialogTitle>
+            <DialogDescription>
+              Keep this window open while your file uploads and is submitted.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3">
+            <p className="truncate text-sm font-medium">{uploadFileName}</p>
+            <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
+              <div
+                className="h-full bg-foreground transition-all duration-150"
+                style={{ width: `${uploadPercent}%` }}
+              />
+            </div>
+            <div className="flex items-center justify-between text-xs text-muted-foreground">
+              <span>
+                {formatBytes(uploadLoadedBytes)} / {formatBytes(uploadTotalBytes)}
+              </span>
+              <span>{uploadPercent}%</span>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Loading time: {uploadElapsedSeconds}s
+            </p>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
