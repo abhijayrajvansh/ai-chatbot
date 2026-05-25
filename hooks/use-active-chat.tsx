@@ -170,6 +170,26 @@ export function ActiveChatProvider({ children }: { children: ReactNode }) {
     },
   });
 
+  const messagesRef = useRef(messages);
+  const statusRef = useRef(status);
+
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+
+  useEffect(() => {
+    statusRef.current = status;
+  }, [status]);
+
+  const prevChatIdRef = useRef(chatId);
+  useEffect(() => {
+    if (prevChatIdRef.current !== chatId) {
+      prevChatIdRef.current = chatId;
+      // Clear immediately on route switch; chat-specific messages are hydrated by SWR effect.
+      setMessages([]);
+    }
+  }, [chatId, setMessages]);
+
   useEffect(() => {
     if (isNewChat) {
       setIsHydratingHistory(false);
@@ -199,7 +219,19 @@ export function ActiveChatProvider({ children }: { children: ReactNode }) {
         };
 
         if (!isCancelled) {
-          setMessages(payload.messages ?? []);
+          const serverMessages = payload.messages ?? [];
+          const currentMessages = messagesRef.current;
+          const isGenerating =
+            statusRef.current === "submitted" || statusRef.current === "streaming";
+
+          if (
+            currentMessages.length > serverMessages.length ||
+            (currentMessages.length > 0 && isGenerating)
+          ) {
+            return;
+          }
+
+          setMessages(serverMessages);
         }
       } catch {
         // Non-fatal; SWR and existing state can still recover on next revalidation.
@@ -217,15 +249,6 @@ export function ActiveChatProvider({ children }: { children: ReactNode }) {
       controller.abort();
     };
   }, [chatId, isNewChat, setMessages]);
-
-  const prevChatIdRef = useRef(chatId);
-  useEffect(() => {
-    if (prevChatIdRef.current !== chatId) {
-      prevChatIdRef.current = chatId;
-      // Clear immediately on route switch; chat-specific messages are hydrated by SWR effect.
-      setMessages([]);
-    }
-  }, [chatId, setMessages]);
 
   useEffect(() => {
     if (chatData && !isNewChat) {
