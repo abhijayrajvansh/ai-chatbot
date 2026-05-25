@@ -1,92 +1,157 @@
-# RAG Architecture (Current Implementation)
+# RAG Architecture (Implemented in Code)
 
-This document explains the RAG pipeline that is currently implemented in this repo.
+This document describes the RAG architecture currently implemented in this repository.
 
-## Goal
+## Scope
 
-Turn uploaded user files into searchable knowledge, then use that knowledge to answer chat questions.
+- Chat API orchestration: `app/(chat)/api/chat/route.ts`
+- RAG document upload/list/delete API: `app/(chat)/api/rag-documents/route.ts`
+- RAG worker API: `app/(chat)/api/rag-documents/process/route.ts`
+- Ingestion pipeline: `lib/rag/ingest.ts`, `lib/rag/worker.ts`
+- Queue: `lib/rag/queue.ts`
+- Vector search + embeddings: `lib/rag/vector.ts`
+- Retrieval + formatting: `lib/rag/retrieval.ts`
+- Storage: `lib/rag/storage.ts`
+- Persistence: `lib/db/queries.ts`, `lib/firebase/*`
 
-## Stack Used
+## Technologies Used
 
-- Storage: Firebase Storage
-- Metadata/status: Firestore (`rag_documents`)
-- Queue: Upstash Redis REST (preferred), with optional TCP Redis fallback
-- Chunk embeddings: OpenAI embeddings via LangChain `OpenAIEmbeddings`
-- Vector DB: Upstash Vector
-- Chat retrieval path: Next.js API route + RAG context injection
+- App/API runtime: Next.js App Router route handlers
+- Authentication: Firebase session cookie via `auth()`
+- Metadata DB: Cloud Firestore
+- File storage: Firebase Storage
+- Queue:
+- Primary: Upstash Redis REST (`UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`)
+- Fallback: Redis TCP client via `REDIS_URL`
+- Embeddings: LangChain `OpenAIEmbeddings` (`@langchain/openai`)
+- Vector DB: Upstash Vector (`@upstash/vector`)
+- Chat model orchestration: LangChain chat models
+- `ChatOpenAI` (`@langchain/openai`)
+- `ChatAnthropic` (`@langchain/anthropic`)
+- `ChatGoogleGenerativeAI` (`@langchain/google-genai`)
 
-## End-to-End Flow
+## Step-by-Step Flow
 
-### 1) User uploads a document
+### 1) Upload entrypoint (`POST /api/rag-documents`)
 
-Route: `POST /api/rag-documents`
+1. Requires authenticated user unless `LOCAL_UI_ONLY/NEXT_PUBLIC_UI_ONLY` mode is active.
+2. Validates file:
+- max size 50 MB
+- MIME types: PDF, XLS/XLSX, TXT, MD, CSV, JSON
+3. Computes SHA-256 checksum (`getRagFileChecksum`) for dedup.
+4. If same-user checksum exists and status is `ready`, returns existing document (`deduplicated: true`).
+5. Creates Firestore `rag_documents` record with initial status `queued`.
+6. Uploads file to Firebase Storage at `rag/{userId}/{ragDocumentId}/{timestamp}-{safeName}`.
+7. Updates `rag_documents.storagePath`.
+8. Enqueues ingest job to Redis queue.
+9. If queue unavailable:
+- falls back to inline ingest in the same request.
+10. If queue is available:
+- still triggers best-effort immediate background processing via `processRagIngestJob(...)` (non-blocking), in addition to queueing.
 
-What happens:
-1. Validate file type and size.
-2. Compute checksum for deduplication.
-3. If same checksum already exists and is `ready`, return existing doc.
-4. Save a Firestore `rag_documents` record with `status=queued`.
-5. Upload original file to Firebase Storage (`storagePath` saved in Firestore).
-6. Push an ingest job to Redis queue.
+### 2) Queue and worker execution (`POST /api/rag-documents/process`)
 
-If queue is unavailable:
-- API falls back to inline ingest so upload still works.
+1. Accepts auth in either of two ways:
+- authenticated user session, or
+- valid `x-rag-worker-secret` matching `RAG_WORKER_SECRET`.
+2. Dequeues up to `limit` jobs (default `2`) from `RAG_QUEUE_NAME` (default `rag-index-jobs`).
+3. For each job:
+- user-scoped safety check when called by session user (re-queues jobs that belong to other users)
+- executes `processRagIngestJob`.
+4. Retry behavior:
+- worker marks retryable failures back to `queued` and caller re-enqueues.
+- non-retryable failures become `failed`.
 
-### 2) Worker processes queued jobs
+### 3) Ingestion internals (`lib/rag/worker.ts` + `lib/rag/ingest.ts`)
 
-Route: `POST /api/rag-documents/process`
+1. Worker loads `rag_documents` record and increments `attempts`.
+2. Status set to `processing` with `processingStartedAt`.
+3. Downloads file bytes from Firebase Storage.
+4. Extracts text by MIME:
+- PDF: `pdfjs-dist` (page-by-page extraction)
+- XLS/XLSX: `xlsx` sheet-to-CSV conversion
+- CSV: `papaparse`
+- TXT/MD/JSON: UTF-8 decode/trim
+5. Chunks text via `chunkText`:
+- defaults: `RAG_CHUNK_SIZE=1200`, `RAG_CHUNK_OVERLAP=180`
+- paragraph-aware; long paragraphs are sliding-window chunked
+- PDF stores `pageNumber` per chunk
+6. Saves full source doc in Firestore `documents` and also writes lexical chunks in Firestore `document_chunks` (used for retrieval fallback).
+7. Embeds chunks using LangChain `OpenAIEmbeddings`:
+- model: `OPENAI_EMBEDDING_MODEL` (default `text-embedding-3-small`)
+- key/base URL source:
+  - `LLM_API_KEY` + optional `LLM_BASE_URL`, else
+  - `OPENAI_API_KEY` + optional `OPENAI_BASE_URL`
+8. Upserts vectors into Upstash Vector.
+9. Updates `rag_documents` to `ready` with `chunkCount`, `readyAt`.
+10. On failure:
+- error code mapping: `extract_failed`, `embed_failed`, `index_failed`
+- retries for `extract_failed` and `embed_failed` until `RAG_MAX_RETRIES` (default `3`)
+- backoff based on `RAG_RETRY_BASE_MS` (default `500`)
 
-What happens:
-1. Pop jobs from queue (`RAG_QUEUE_NAME`).
-2. Mark doc `processing` and increment `attempts`.
-3. Download file from Firebase Storage.
-4. Extract text by MIME type:
-   - PDF: `pdfjs-dist`
-   - XLS/XLSX: `xlsx`
-   - CSV: `papaparse`
-   - TXT/MD/JSON: plain text decode
-5. Chunk text using `chunkText`.
-6. Embed chunks with `OpenAIEmbeddings` (`OPENAI_EMBEDDING_MODEL`).
-7. Upsert vectors to Upstash Vector.
-8. Mark Firestore record `ready` with `chunkCount`.
+### 4) Vector schema (`lib/rag/vector.ts`)
 
-On failure:
-- Save `error` + `errorCode`.
-- Retry until `RAG_MAX_RETRIES`.
-- Mark `failed` when retries are exhausted.
+- Vector id format: `${userId}:${documentId}:${chunkIndex}`
+- Vector metadata:
+- `userId`
+- `documentId`
+- `documentTitle`
+- `documentKind`
+- `chunkIndex`
+- optional `pageNumber`
+- Stored vector payload data: raw chunk text
 
-### 3) Retrieval during chat
+### 5) Retrieval at chat time (`POST /api/chat`)
 
-Route: `POST /api/chat`
+1. Chat API obtains latest user query text.
+2. Calls `getRelevantContextForUser({ userId, query })`.
+3. Retrieval path:
+- tries vector search first via Upstash Vector + query embedding
+- candidate depth uses `RAG_RETRIEVAL_CANDIDATE_K` with internal safe expansion (`max(limit*8, 24)`)
+- filters results by `metadata.userId`
+- applies lexical guardrail: token-overlap threshold (`>= 2`) before accepting semantic hits
+4. If vector unavailable or no vector hits:
+- falls back to Firestore `document_chunks` token-overlap scoring.
+5. Formats selected chunks (`RAG_TOP_K`, default `6`) into prompt context with document title, chunk index, and page number (if available).
+6. Injects context into system prompt (`systemPrompt`) with explicit citation instructions.
+7. Sends final prompt to LangChain chat model and streams response to client.
 
-What happens:
-1. Read latest user message.
-2. Create query embedding.
-3. Query Upstash Vector with candidate limit (`RAG_RETRIEVAL_CANDIDATE_K`, with safe defaults).
-4. Filter by `userId` for data isolation.
-5. Select top context chunks (`RAG_TOP_K`).
-6. Inject context into system prompt.
-7. Generate final response from chat model.
+## Chat Model Configuration (LLMs in this app)
 
-Fallback behavior:
-- If vector search is disabled/unavailable, retrieval falls back to token-overlap scoring on stored chunks.
+- UI-listed chat model in current config: `openai/gpt-4.1-mini` (`lib/llm/models.ts`)
+- Runtime chat adapter supports provider prefixes:
+- `openai/*` via `ChatOpenAI`
+- `anthropic/*` via `ChatAnthropic`
+- `google/*` via `ChatGoogleGenerativeAI`
+- OpenAI-compatible custom endpoint is also supported through:
+- `LLM_BASE_URL`
+- `LLM_API_KEY`
+- `LLM_MODEL` (for `openai/custom`)
 
-## Firestore `rag_documents` lifecycle
+## Firestore Data Surfaces Used by RAG
 
-Status transitions:
+- `rag_documents`:
+- lifecycle/status and ingestion metadata
+- `documents`:
+- full extracted text per ingested document id
+- `document_chunks`:
+- chunked text for lexical fallback retrieval
+
+## `rag_documents` Lifecycle
+
 - `queued -> processing -> ready`
-- `queued -> processing -> failed`
 - `queued -> processing -> queued` (retry path)
+- `queued -> processing -> failed`
 
-Important fields tracked:
+Tracked fields include:
 - `status`, `error`, `errorCode`
 - `attempts`
+- `checksum`, `storagePath`, `chunkCount`, `embeddingModel`
 - `queuedAt`, `processingStartedAt`, `readyAt`, `failedAt`
-- `storagePath`, `checksum`, `chunkCount`, `embeddingModel`
 
 ## Queue Payload
 
-Each queued job includes:
+Each queue item contains:
 - `jobId`
 - `ragDocumentId`
 - `userId`
@@ -96,45 +161,39 @@ Each queued job includes:
 - `checksum`
 - `enqueuedAt`
 
-## Vector Schema
+## Deletion Flow (`DELETE /api/rag-documents`)
 
-Vector id:
-- `${userId}:${documentId}:${chunkIndex}`
+For selected docs (`single`, `failed`, or `all`):
+1. Delete vectors in Upstash Vector by prefix `${userId}:${documentId}:` (best-effort).
+2. Delete file from Firebase Storage (if `storagePath` exists).
+3. Delete Firestore `rag_documents`, plus associated `documents` and `document_chunks`.
 
-Vector metadata:
-- `userId`
-- `documentId`
-- `documentTitle`
-- `documentKind`
-- `chunkIndex`
+## Required and Optional Environment Variables
 
-## Required Environment Variables
-
-Core RAG:
+Core vector RAG:
 - `UPSTASH_VECTOR_REST_URL`
 - `UPSTASH_VECTOR_REST_TOKEN`
 - `OPENAI_EMBEDDING_MODEL` (default `text-embedding-3-small`)
-- `OPENAI_API_KEY` or `LLM_API_KEY`
+- embedding auth:
+  - `OPENAI_API_KEY` (or)
+  - `LLM_API_KEY` (with optional `LLM_BASE_URL`)
 
-Queue (preferred):
-- `UPSTASH_REDIS_REST_URL`
-- `UPSTASH_REDIS_REST_TOKEN`
+Queue:
+- preferred: `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`
+- fallback: `REDIS_URL` (`redis://...`)
+- optional: `RAG_QUEUE_NAME`
 
-Queue fallback (optional):
-- `REDIS_URL` (must be `redis://...`)
-
-Tuning:
-- `RAG_QUEUE_NAME`
-- `RAG_TOP_K`
-- `RAG_RETRIEVAL_CANDIDATE_K`
-- `RAG_CHUNK_SIZE`
-- `RAG_CHUNK_OVERLAP`
+Worker/retry tuning:
+- `RAG_WORKER_SECRET`
 - `RAG_MAX_RETRIES`
 - `RAG_RETRY_BASE_MS`
-- `RAG_WORKER_SECRET` (recommended for secure worker endpoint)
+- `RAG_RETRIEVAL_CANDIDATE_K`
+- `RAG_TOP_K`
+- `RAG_CHUNK_SIZE`
+- `RAG_CHUNK_OVERLAP`
 
 ## Operational Notes
 
-- RAG documents page polls status and can trigger processing route while docs are pending.
-- For production, schedule `POST /api/rag-documents/process` via cron with `x-rag-worker-secret`.
-- User data isolation is enforced in retrieval by `userId` filtering.
+- RAG index writes are user-isolated and retrieval re-filters by `userId`.
+- Vector search is optional; if disabled/misconfigured, lexical fallback still works using Firestore `document_chunks`.
+- `POST /api/rag-documents/process` is designed for cron/worker invocation in production with `x-rag-worker-secret`.
