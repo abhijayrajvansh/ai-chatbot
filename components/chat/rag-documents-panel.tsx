@@ -1,6 +1,7 @@
 "use client";
 
 import { FileTextIcon, UploadIcon } from "lucide-react";
+import { ref, uploadBytesResumable } from "firebase/storage";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import useSWR from "swr";
@@ -22,7 +23,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { firebaseClientAuth } from "@/lib/firebase/client";
+import { firebaseClientAuth, firebaseClientStorage } from "@/lib/firebase/client";
 import { cn, fetcher } from "@/lib/utils";
 
 type RagDocument = {
@@ -73,6 +74,17 @@ async function getAuthorizationHeader(): Promise<Record<string, string>> {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
+function sanitizeFileName(fileName: string) {
+  return fileName.replace(/[^a-zA-Z0-9._-]/g, "_").trim() || "document";
+}
+
+async function getFileChecksum(file: File) {
+  const hashBuffer = await crypto.subtle.digest("SHA-256", await file.arrayBuffer());
+  return Array.from(new Uint8Array(hashBuffer))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
 export function RagDocumentsPanel() {
   const inputRef = useRef<HTMLInputElement>(null);
   const [isDragging, setIsDragging] = useState(false);
@@ -116,54 +128,68 @@ export function RagDocumentsPanel() {
 
   const uploadFile = useCallback(
     async (file: File) => {
-      const formData = new FormData();
-      formData.append("file", file);
-      const authHeader = await getAuthorizationHeader();
+      const user = firebaseClientAuth().currentUser;
+      if (!user) {
+        throw new Error("Please sign in before uploading documents.");
+      }
+
+      const ragDocumentId = crypto.randomUUID();
+      const checksum = await getFileChecksum(file);
+      const storagePath = `rag/${user.uid}/${ragDocumentId}/${Date.now()}-${sanitizeFileName(file.name)}`;
+      const uploadTask = uploadBytesResumable(
+        ref(firebaseClientStorage(), storagePath),
+        file,
+        { contentType: file.type }
+      );
 
       await new Promise<void>((resolve, reject) => {
-        const xhr = new XMLHttpRequest();
-        xhr.open(
-          "POST",
-          `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/api/rag-documents`
-        );
-        for (const [key, value] of Object.entries(authHeader)) {
-          xhr.setRequestHeader(key, value);
-        }
+        uploadTask.on(
+          "state_changed",
+          (snapshot) => {
+            const nextLoaded = snapshot.bytesTransferred;
+            const nextTotal = snapshot.totalBytes;
+            const nextPercent = Math.min(
+              100,
+              Math.round((nextLoaded / nextTotal) * 100)
+            );
 
-        xhr.upload.onprogress = (event) => {
-          if (!event.lengthComputable) {
-            return;
-          }
-
-          const nextLoaded = event.loaded;
-          const nextTotal = event.total;
-          const nextPercent = Math.min(100, Math.round((nextLoaded / nextTotal) * 100));
-
-          setUploadLoadedBytes(nextLoaded);
-          setUploadTotalBytes(nextTotal);
-          setUploadPercent(nextPercent);
-        };
-
-        xhr.onerror = () => {
-          reject(new Error("Upload failed"));
-        };
-
-        xhr.onload = () => {
-          if (xhr.status >= 200 && xhr.status < 300) {
+            setUploadLoadedBytes(nextLoaded);
+            setUploadTotalBytes(nextTotal);
+            setUploadPercent(nextPercent);
+          },
+          (error) => {
+            reject(error);
+          },
+          () => {
             resolve();
-            return;
           }
-
-          try {
-            const payload = JSON.parse(xhr.responseText) as { error?: string };
-            reject(new Error(payload.error ?? "Upload failed"));
-          } catch {
-            reject(new Error("Upload failed"));
-          }
-        };
-
-        xhr.send(formData);
+        );
       });
+
+      const authHeader = await getAuthorizationHeader();
+
+      const response = await fetch(
+        `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/api/rag-documents`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...authHeader },
+          body: JSON.stringify({
+            ragDocumentId,
+            storagePath,
+            fileName: file.name,
+            mimeType: file.type,
+            size: file.size,
+            checksum,
+          }),
+        }
+      );
+
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => null)) as
+          | { error?: string }
+          | null;
+        throw new Error(payload?.error ?? "Upload failed");
+      }
 
       setUploadPercent(100);
       setUploadLoadedBytes(file.size);

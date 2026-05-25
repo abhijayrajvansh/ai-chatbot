@@ -2,6 +2,7 @@
 
 import { getApps, initializeApp } from "firebase/app";
 import { getAuth } from "firebase/auth";
+import { getStorage } from "firebase/storage";
 
 function getFirebaseClientConfig() {
   return {
@@ -27,4 +28,8 @@ export function firebaseClientApp() {
 
 export function firebaseClientAuth() {
   return getAuth(firebaseClientApp());
+}
+
+export function firebaseClientStorage() {
+  return getStorage(firebaseClientApp());
 }

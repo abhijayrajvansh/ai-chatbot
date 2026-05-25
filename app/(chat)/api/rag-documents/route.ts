@@ -28,7 +28,11 @@ import {
   isSupportedPineconeAssistantFileType,
 } from "@/lib/rag/provider";
 import { enqueueRagIngestJob } from "@/lib/rag/queue";
-import { deleteRagFileFromStorage, uploadRagFileToStorage } from "@/lib/rag/storage";
+import {
+  deleteRagFileFromStorage,
+  downloadRagFileFromStorage,
+  uploadRagFileToStorage,
+} from "@/lib/rag/storage";
 import { deleteDocumentChunksFromVectorStore } from "@/lib/rag/vector";
 import { processRagIngestJob } from "@/lib/rag/worker";
 import { generateUUID } from "@/lib/utils";
@@ -54,6 +58,15 @@ const UploadSchema = z.object({
 const DeleteSchema = z.object({
   id: z.string().optional(),
   mode: z.enum(["single", "failed", "all"]).default("single"),
+});
+
+const StoredUploadSchema = z.object({
+  ragDocumentId: z.string().min(1),
+  storagePath: z.string().min(1),
+  fileName: z.string().min(1),
+  mimeType: z.string().min(1),
+  size: z.number().int().positive().max(50 * 1024 * 1024),
+  checksum: z.string().min(1),
 });
 
 async function syncPineconeDocumentStatus(document: {
@@ -99,6 +112,128 @@ async function syncPineconeDocumentStatus(document: {
     }).catch(() => null);
     return null;
   }
+}
+
+async function handleStoredUpload({
+  payload,
+  userId,
+}: {
+  payload: z.infer<typeof StoredUploadSchema>;
+  userId: string;
+}) {
+  if (!payload.storagePath.startsWith(`rag/${userId}/${payload.ragDocumentId}/`)) {
+    return NextResponse.json({ error: "Invalid storage path" }, { status: 400 });
+  }
+
+  const typeIsSupported = isPineconeAssistantRagEnabled()
+    ? isSupportedPineconeAssistantFileType(payload.mimeType)
+    : isSupportedRagFileType(payload.mimeType);
+
+  if (!typeIsSupported) {
+    return NextResponse.json(
+      { error: getSupportedRagFileTypesMessage() },
+      { status: 400 }
+    );
+  }
+
+  const existingDocument = await getRagDocumentByChecksumForUser({
+    userId,
+    checksum: payload.checksum,
+  });
+
+  if (existingDocument?.status === "ready") {
+    await deleteRagFileFromStorage({ storagePath: payload.storagePath }).catch(
+      () => null
+    );
+    return Response.json(
+      { document: existingDocument, deduplicated: true },
+      { status: 200 }
+    );
+  }
+
+  const draftDocumentId = generateUUID();
+
+  await saveRagDocument({
+    id: payload.ragDocumentId,
+    documentId: draftDocumentId,
+    title: payload.fileName,
+    fileName: payload.fileName,
+    mimeType: payload.mimeType,
+    size: payload.size,
+    checksum: payload.checksum,
+    storagePath: payload.storagePath,
+    status: "queued",
+    queuedAt: new Date(),
+    attempts: 0,
+    chunkCount: 0,
+    ragProvider: isPineconeAssistantRagEnabled()
+      ? "pinecone-assistant"
+      : "legacy-custom",
+    embeddingModel: isPineconeAssistantRagEnabled()
+      ? "pinecone-assistant"
+      : undefined,
+    error: null,
+    errorCode: null,
+    userId,
+  });
+
+  const buffer = await downloadRagFileFromStorage({
+    storagePath: payload.storagePath,
+  });
+
+  if (isPineconeAssistantRagEnabled()) {
+    const file = new File([new Uint8Array(buffer)], payload.fileName, {
+      type: payload.mimeType,
+    });
+    const uploaded = await uploadFileToPineconeAssistant({
+      file,
+      userId,
+      ragDocumentId: payload.ragDocumentId,
+      checksum: payload.checksum,
+    });
+    const mappedStatus = mapPineconeFileStatus(uploaded.status);
+
+    await updateRagDocumentById({
+      id: payload.ragDocumentId,
+      status: mappedStatus.status,
+      error: uploaded.errorMessage ?? null,
+      errorCode: mappedStatus.errorCode,
+      processingStartedAt: new Date(),
+      readyAt: mappedStatus.status === "ready" ? new Date() : undefined,
+      failedAt: mappedStatus.status === "failed" ? new Date() : undefined,
+      pineconeAssistantName: process.env.PINECONE_ASSISTANT_NAME?.trim() ?? null,
+      pineconeAssistantFileId: uploaded.id,
+      pineconeAssistantFileStatus: uploaded.status,
+      pineconeAssistantFileMetadata: uploaded.metadata ?? null,
+      pineconeUploadedAt: new Date(),
+      pineconeSyncedAt: new Date(),
+    });
+
+    const ragDocument = await getRagDocumentById({ id: payload.ragDocumentId });
+    return Response.json({ document: ragDocument }, { status: 201 });
+  }
+
+  const ingested = await ingestRagDocument({
+    fileName: payload.fileName,
+    mimeType: payload.mimeType,
+    fileSize: payload.size,
+    fileBuffer: buffer,
+    userId,
+    documentId: draftDocumentId,
+  });
+
+  await updateRagDocumentById({
+    id: payload.ragDocumentId,
+    documentId: ingested.documentId,
+    status: "ready",
+    chunkCount: ingested.chunkCount,
+    readyAt: new Date(),
+    error: null,
+    errorCode: null,
+  });
+
+  const ragDocument = await getRagDocumentById({ id: payload.ragDocumentId });
+  return Response.json({ document: ragDocument }, { status: 201 });
 }
 
 export async function GET() {
@@ -173,6 +308,22 @@ export async function POST(request: Request) {
   let ragDocumentId: string | null = null;
 
   try {
+    if (request.headers.get("content-type")?.includes("application/json")) {
+      const parsed = StoredUploadSchema.safeParse(await request.json());
+      if (!parsed.success) {
+        const errorMessage = parsed.error.errors
+          .map((error) => error.message)
+          .join(", ");
+        return NextResponse.json({ error: errorMessage }, { status: 400 });
+      }
+
+      ragDocumentId = parsed.data.ragDocumentId;
+      return await handleStoredUpload({
+        payload: parsed.data,
+        userId: session.user.id,
+      });
+    }
+
     let formData: FormData;
     try {
       formData = await request.formData();
