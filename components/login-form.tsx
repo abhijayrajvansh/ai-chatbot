@@ -1,14 +1,15 @@
 "use client";
 
+import { signInWithEmailAndPassword } from "firebase/auth";
 import { EyeIcon, EyeOffIcon } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useActionState, useEffect, useState } from "react";
-import { type LoginActionState, login } from "@/app/(auth)/actions";
+import { useEffect, useState } from "react";
 import { useSession } from "@/components/auth/session-provider";
 import { toast } from "@/components/chat/toast";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { firebaseClientAuth } from "@/lib/firebase/client";
 import { cn } from "@/lib/utils";
 
 export function LoginForm({
@@ -20,30 +21,33 @@ export function LoginForm({
   const redirectUrl = searchParams.get("redirectUrl") || "/";
   const [email, setEmail] = useState("");
   const [showPassword, setShowPassword] = useState(false);
-  const [state, formAction, isPending] = useActionState<
-    LoginActionState,
-    FormData
-  >(login, { status: "idle" });
+  const [isPending, setIsPending] = useState(false);
   const { update: updateSession } = useSession();
 
   useEffect(() => {
-    if (state.status === "failed") {
-      toast({ type: "error", description: "Invalid credentials!" });
-    } else if (state.status === "invalid_data") {
-      toast({
-        type: "error",
-        description: "Failed validating your submission!",
-      });
-    } else if (state.status === "success") {
-      updateSession();
-      router.replace(redirectUrl.startsWith("/") ? redirectUrl : "/");
-      router.refresh();
+    if (redirectUrl.startsWith("/")) {
+      router.prefetch(redirectUrl);
     }
-  }, [redirectUrl, router, state.status, updateSession]);
+  }, [redirectUrl, router]);
 
   const handleAction = (formData: FormData) => {
-    setEmail(String(formData.get("email") ?? ""));
-    formAction(formData);
+    const nextEmail = String(formData.get("email") ?? "");
+    const password = String(formData.get("password") ?? "");
+    setEmail(nextEmail);
+
+    setIsPending(true);
+    signInWithEmailAndPassword(firebaseClientAuth(), nextEmail, password)
+      .then(async () => {
+        await updateSession();
+        router.replace(redirectUrl.startsWith("/") ? redirectUrl : "/");
+        router.refresh();
+      })
+      .catch(() => {
+        toast({ type: "error", description: "Invalid credentials!" });
+      })
+      .finally(() => {
+        setIsPending(false);
+      });
   };
 
   return (

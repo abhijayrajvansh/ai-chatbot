@@ -1,5 +1,7 @@
 "use client";
 
+import { onIdTokenChanged, signOut as firebaseSignOut } from "firebase/auth";
+import { usePathname, useRouter } from "next/navigation";
 import {
   createContext,
   useCallback,
@@ -9,6 +11,11 @@ import {
   useState,
 } from "react";
 import type { Session } from "@/app/(auth)/auth";
+import { firebaseClientAuth } from "@/lib/firebase/client";
+import {
+  FIREBASE_ID_TOKEN_COOKIE,
+  FIREBASE_ID_TOKEN_MAX_AGE_SECONDS,
+} from "@/lib/firebase/session";
 
 type SessionStatus = "loading" | "authenticated" | "unauthenticated";
 
@@ -20,17 +27,13 @@ type SessionContextValue = {
 
 const SessionContext = createContext<SessionContextValue | null>(null);
 
-async function fetchSession() {
-  const response = await fetch(
-    `${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/api/auth/session`,
-    { cache: "no-store" }
-  );
+function setIdTokenCookie(token: string) {
+  const secure = window.location.protocol === "https:" ? "; Secure" : "";
+  document.cookie = `${FIREBASE_ID_TOKEN_COOKIE}=${token}; Path=/; Max-Age=${FIREBASE_ID_TOKEN_MAX_AGE_SECONDS}; SameSite=Lax${secure}`;
+}
 
-  if (!response.ok) {
-    return null;
-  }
-
-  return (await response.json()) as Session | null;
+function clearIdTokenCookie() {
+  document.cookie = `${FIREBASE_ID_TOKEN_COOKIE}=; Path=/; Max-Age=0; SameSite=Lax`;
 }
 
 export function FirebaseSessionProvider({
@@ -38,20 +41,78 @@ export function FirebaseSessionProvider({
 }: {
   children: React.ReactNode;
 }) {
+  const router = useRouter();
+  const pathname = usePathname();
   const [data, setData] = useState<Session | null>(null);
   const [status, setStatus] = useState<SessionStatus>("loading");
 
   const update = useCallback(async () => {
     setStatus("loading");
-    const nextSession = await fetchSession();
+    const user = firebaseClientAuth().currentUser;
+    if (!user) {
+      clearIdTokenCookie();
+      setData(null);
+      setStatus("unauthenticated");
+      return null;
+    }
+
+    const token = await user.getIdToken();
+    setIdTokenCookie(token);
+    const nextSession: Session = {
+      user: {
+        id: user.uid,
+        email: user.email,
+        name: user.displayName,
+        image: user.photoURL,
+        type: "regular",
+      },
+    };
     setData(nextSession);
-    setStatus(nextSession ? "authenticated" : "unauthenticated");
+    setStatus("authenticated");
     return nextSession;
   }, []);
 
   useEffect(() => {
-    update();
-  }, [update]);
+    return onIdTokenChanged(firebaseClientAuth(), async (user) => {
+      if (!user) {
+        clearIdTokenCookie();
+        setData(null);
+        setStatus("unauthenticated");
+        return;
+      }
+
+      const token = await user.getIdToken();
+      setIdTokenCookie(token);
+      setData({
+        user: {
+          id: user.uid,
+          email: user.email,
+          name: user.displayName,
+          image: user.photoURL,
+          type: "regular",
+        },
+      });
+      setStatus("authenticated");
+    });
+  }, []);
+
+  useEffect(() => {
+    if (status === "loading") {
+      return;
+    }
+
+    const isLoginPage = pathname === "/login";
+    if (status === "unauthenticated" && !isLoginPage) {
+      router.replace(`/login?redirectUrl=${encodeURIComponent(pathname || "/")}`);
+      return;
+    }
+
+    if (status === "authenticated" && isLoginPage) {
+      const searchParams = new URLSearchParams(window.location.search);
+      const redirectUrl = searchParams.get("redirectUrl") || "/";
+      router.replace(redirectUrl.startsWith("/") ? redirectUrl : "/");
+    }
+  }, [pathname, router, status]);
 
   const value = useMemo(
     () => ({
@@ -76,9 +137,8 @@ export function useSession() {
 }
 
 export async function signOut(options?: { redirectTo?: string }) {
-  await fetch(`${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/api/auth/logout`, {
-    method: "POST",
-  });
+  await firebaseSignOut(firebaseClientAuth());
+  clearIdTokenCookie();
 
   if (options?.redirectTo) {
     window.location.assign(options.redirectTo);

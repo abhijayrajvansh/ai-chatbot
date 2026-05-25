@@ -19,7 +19,7 @@ Current production target: set `RAG_PROVIDER=pinecone-assistant` to use Pinecone
 ## Technologies Used
 
 - App/API runtime: Next.js App Router route handlers
-- Authentication: Firebase session cookie via `auth()`
+- Authentication: Firebase client SDK sign-in with server-side Firebase ID token verification via `auth()`
 - Metadata DB: Cloud Firestore
 - File storage: Firebase Storage
 - Queue:

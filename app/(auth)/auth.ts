@@ -1,9 +1,5 @@
-import { cookies } from "next/headers";
-import { redirect } from "next/navigation";
-import {
-  clearSessionCookie,
-  FIREBASE_SESSION_COOKIE,
-} from "@/lib/firebase/auth";
+import { cookies, headers } from "next/headers";
+import { FIREBASE_ID_TOKEN_COOKIE } from "@/lib/firebase/session";
 import { firebaseAuth, firestore } from "@/lib/firebase/admin";
 import { firebaseCollections } from "@/lib/firebase/collections";
 
@@ -21,19 +17,30 @@ export type Session = {
   user: AuthUser;
 };
 
-export async function auth(): Promise<Session | null> {
-  const cookieStore = await cookies();
-  const sessionCookie = cookieStore.get(FIREBASE_SESSION_COOKIE)?.value;
+async function getFirebaseIdToken() {
+  const [cookieStore, headerStore] = await Promise.all([cookies(), headers()]);
+  const cookieToken = cookieStore.get(FIREBASE_ID_TOKEN_COOKIE)?.value;
+  if (cookieToken) {
+    return cookieToken;
+  }
 
-  if (!sessionCookie) {
+  const authorization = headerStore.get("authorization");
+  if (!authorization?.startsWith("Bearer ")) {
+    return null;
+  }
+
+  return authorization.slice("Bearer ".length).trim() || null;
+}
+
+export async function auth(): Promise<Session | null> {
+  const idToken = await getFirebaseIdToken();
+
+  if (!idToken) {
     return null;
   }
 
   try {
-    const decoded = await firebaseAuth().verifySessionCookie(
-      sessionCookie,
-      false
-    );
+    const decoded = await firebaseAuth().verifyIdToken(idToken, false);
     const userRecord = await firebaseAuth().getUser(decoded.uid);
     const userDoc = await firestore()
       .collection(firebaseCollections.users)
@@ -53,13 +60,5 @@ export async function auth(): Promise<Session | null> {
     };
   } catch {
     return null;
-  }
-}
-
-export async function signOut(options?: { redirectTo?: string }) {
-  await clearSessionCookie();
-
-  if (options?.redirectTo) {
-    redirect(options.redirectTo);
   }
 }

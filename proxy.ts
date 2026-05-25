@@ -1,7 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server";
+import { FIREBASE_ID_TOKEN_COOKIE } from "./lib/firebase/session";
 import { isLocalUiOnlyMode } from "./lib/local-mode";
-
-const FIREBASE_SESSION_COOKIE = "firebase_session";
 
 export async function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
@@ -10,17 +9,13 @@ export async function proxy(request: NextRequest) {
     return new Response("pong", { status: 200 });
   }
 
-  if (pathname.startsWith("/api/auth")) {
-    return NextResponse.next();
-  }
-
   if (isLocalUiOnlyMode) {
     return NextResponse.next();
   }
 
   const base = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
   const hasSessionCookie = Boolean(
-    request.cookies.get(FIREBASE_SESSION_COOKIE)?.value
+    request.cookies.get(FIREBASE_ID_TOKEN_COOKIE)?.value
   );
 
   if (pathname === "/login") {
