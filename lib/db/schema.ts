@@ -93,6 +93,13 @@ export type RagDocument = {
   attempts: number;
   embeddingModel: string;
   chunkCount: number;
+  ragProvider: "legacy-custom" | "pinecone-assistant";
+  pineconeAssistantName: string | null;
+  pineconeAssistantFileId: string | null;
+  pineconeAssistantFileStatus: string | null;
+  pineconeAssistantFileMetadata: Record<string, unknown> | null;
+  pineconeUploadedAt: Date | null;
+  pineconeSyncedAt: Date | null;
   userId: string;
   createdAt: Date;
   updatedAt: Date;

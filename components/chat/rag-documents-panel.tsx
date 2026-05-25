@@ -36,6 +36,8 @@ type RagDocument = {
   error: string | null;
   embeddingModel: string;
   chunkCount: number;
+  ragProvider: "legacy-custom" | "pinecone-assistant";
+  pineconeAssistantFileStatus: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -54,6 +56,15 @@ function statusDotClass(status: RagDocument["status"]) {
     return "bg-amber-400";
   }
   return "bg-muted-foreground/40";
+}
+
+function getDocumentMeta(doc: RagDocument) {
+  const provider =
+    doc.ragProvider === "pinecone-assistant"
+      ? "Pinecone Assistant"
+      : `${doc.chunkCount} chunks`;
+
+  return `${provider} • ${formatBytes(doc.size)} • ${new Date(doc.createdAt).toLocaleString()}`;
 }
 
 export function RagDocumentsPanel() {
@@ -84,29 +95,6 @@ export function RagDocumentsPanel() {
   );
 
   const documents = useMemo(() => data?.documents ?? [], [data]);
-  const hasPendingDocuments = useMemo(
-    () =>
-      documents.some(
-        (document) =>
-          document.status === "queued" || document.status === "processing"
-      ),
-    [documents]
-  );
-
-  useEffect(() => {
-    if (!hasPendingDocuments) {
-      return;
-    }
-
-    const timer = setTimeout(() => {
-      fetch(`${process.env.NEXT_PUBLIC_BASE_PATH ?? ""}/api/rag-documents/process?limit=2`, {
-        method: "POST",
-      }).catch(() => null);
-    }, 500);
-
-    return () => clearTimeout(timer);
-  }, [hasPendingDocuments]);
-
   useEffect(() => {
     if (!showUploadDialog || uploadStartedAt === null) {
       return;
@@ -302,11 +290,11 @@ export function RagDocumentsPanel() {
               Drag and drop files here, or click to upload
             </p>
             <p className="text-xs text-muted-foreground">
-              Supports .pdf, .xls, .xlsx, .txt, .md, .csv, .json up to 50MB
+              Supports .pdf, .docx, .txt, .md, .json up to 50MB
             </p>
           </div>
           <input
-            accept=".pdf,.xls,.xlsx,.txt,.md,.csv,.json,application/pdf,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/plain,text/markdown,text/csv,application/json"
+            accept=".pdf,.docx,.txt,.md,.json,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain,text/markdown,application/json"
             className="hidden"
             multiple
             onChange={async (event) => {
@@ -380,8 +368,7 @@ export function RagDocumentsPanel() {
                         />
                         {doc.status}
                       </span>{" "}
-                      • {doc.chunkCount} chunks • {formatBytes(doc.size)} •{" "}
-                      {new Date(doc.createdAt).toLocaleString()}
+                      • {getDocumentMeta(doc)}
                     </p>
                     {doc.error ? (
                       <p className="mt-1 text-xs text-destructive">{doc.error}</p>

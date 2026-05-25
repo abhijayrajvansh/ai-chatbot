@@ -22,6 +22,7 @@ import {
   getChatById,
   getMessageCountByUserId,
   getMessagesByChatId,
+  getRagDocumentsByUserId,
   saveChat,
   saveMessages,
   updateChatTitleById,
@@ -36,6 +37,13 @@ import {
   getLatestUserText,
   getRelevantContextForUser,
 } from "@/lib/rag/retrieval";
+import {
+  formatPineconeCitations,
+  isPineconeAssistantConfigured,
+  streamPineconeAssistantChat,
+  toPineconeAssistantMessages,
+} from "@/lib/rag/pinecone-assistant";
+import { isPineconeAssistantRagEnabled } from "@/lib/rag/provider";
 import { extractTextFromLangChainMessage } from "@/lib/llm/chat";
 import { generateTitleFromUserMessage } from "../../actions";
 import { type PostRequestBody, postRequestBodySchema } from "./schema";
@@ -120,13 +128,6 @@ export async function POST(request: Request) {
       return new ChatbotError("unauthorized:chat").toResponse();
     }
 
-    if (allowedModelIds.size === 0) {
-      return new ChatbotError(
-        "bad_request:api",
-        "No AI provider is configured. Set OPENAI_API_KEY, ANTHROPIC_API_KEY, GOOGLE_API_KEY, or LLM_BASE_URL with LLM_API_KEY."
-      ).toResponse();
-    }
-
     const chatModel = allowedModelIds.has(selectedChatModel)
       ? selectedChatModel
       : DEFAULT_CHAT_MODEL;
@@ -174,11 +175,32 @@ export async function POST(request: Request) {
     const userText =
       getLatestUserText(uiMessages) ||
       (message ? getTextFromMessage(message) : "");
-    const relevantChunks = await getRelevantContextForUser({
-      userId: session.user.id,
-      query: userText,
-    });
-    const retrievedContext = formatRetrievedContext(relevantChunks);
+    const pineconeReadyDocuments = isPineconeAssistantRagEnabled()
+      ? (await getRagDocumentsByUserId({ userId: session.user.id })).filter(
+          (document) =>
+            document.ragProvider === "pinecone-assistant" &&
+            document.status === "ready" &&
+            Boolean(document.pineconeAssistantFileId)
+        )
+      : [];
+    const usePineconeAssistant =
+      pineconeReadyDocuments.length > 0 && isPineconeAssistantConfigured();
+
+    if (allowedModelIds.size === 0 && !usePineconeAssistant) {
+      return new ChatbotError(
+        "bad_request:api",
+        "No AI provider is configured. Set OPENAI_API_KEY, ANTHROPIC_API_KEY, GOOGLE_API_KEY, or LLM_BASE_URL with LLM_API_KEY."
+      ).toResponse();
+    }
+
+    const retrievedContext = usePineconeAssistant
+      ? ""
+      : formatRetrievedContext(
+          await getRelevantContextForUser({
+            userId: session.user.id,
+            query: userText,
+          })
+        );
 
     if (message?.role === "user") {
       await saveMessages({
@@ -208,6 +230,7 @@ export async function POST(request: Request) {
       return [new HumanMessage(text)];
     });
 
+    const pineconeMessages = toPineconeAssistantMessages(uiMessages);
     const modelMessages: BaseMessage[] = [
       new SystemMessage(
         systemPrompt({
@@ -219,7 +242,7 @@ export async function POST(request: Request) {
       ...historyMessages,
     ];
 
-    const model = getLanguageModel(chatModel);
+    const model = usePineconeAssistant ? null : getLanguageModel(chatModel);
 
     const stream = createUIMessageStream({
       originalMessages: messages ? (uiMessages as ChatMessage[]) : undefined,
@@ -228,17 +251,56 @@ export async function POST(request: Request) {
         dataStream.write({ type: "text-start", id: textId });
 
         try {
-          const responseStream = await model.stream(modelMessages);
-
-          for await (const chunk of responseStream) {
-            const delta = extractTextFromLangChainMessage(chunk);
-            if (!delta) {
-              continue;
+          if (usePineconeAssistant) {
+            const citations: Parameters<typeof formatPineconeCitations>[0] = [];
+            for await (const part of streamPineconeAssistantChat({
+              messages: pineconeMessages,
+              userId: session.user.id,
+            })) {
+              if (part.type === "text") {
+                dataStream.write({
+                  type: "text-delta",
+                  id: textId,
+                  delta: part.text,
+                });
+              } else {
+                citations.push(part.citation);
+              }
             }
 
-            dataStream.write({ type: "text-delta", id: textId, delta });
+            const formattedSources = formatPineconeCitations(citations);
+            if (formattedSources) {
+              dataStream.write({
+                type: "text-delta",
+                id: textId,
+                delta: formattedSources,
+              });
+            }
+          } else {
+            if (!model) {
+              throw new Error("No chat model is configured");
+            }
+
+            const responseStream = await model.stream(modelMessages);
+
+            for await (const chunk of responseStream) {
+              const delta = extractTextFromLangChainMessage(chunk);
+              if (!delta) {
+                continue;
+              }
+
+              dataStream.write({ type: "text-delta", id: textId, delta });
+            }
           }
         } catch (_) {
+          if (usePineconeAssistant) {
+            throw _;
+          }
+
+          if (!model) {
+            throw new Error("No chat model is configured");
+          }
+
           // Fallback for providers/configurations that do not support streaming.
           const response = await model.invoke(modelMessages);
           const text = extractTextFromLangChainMessage(response);

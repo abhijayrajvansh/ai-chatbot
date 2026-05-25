@@ -16,6 +16,17 @@ import {
   ingestRagDocument,
   isSupportedRagFileType,
 } from "@/lib/rag/ingest";
+import {
+  deletePineconeAssistantFile,
+  getPineconeAssistantFile,
+  mapPineconeFileStatus,
+  uploadFileToPineconeAssistant,
+} from "@/lib/rag/pinecone-assistant";
+import {
+  getSupportedRagFileTypesMessage,
+  isPineconeAssistantRagEnabled,
+  isSupportedPineconeAssistantFileType,
+} from "@/lib/rag/provider";
 import { enqueueRagIngestJob } from "@/lib/rag/queue";
 import { deleteRagFileFromStorage, uploadRagFileToStorage } from "@/lib/rag/storage";
 import { deleteDocumentChunksFromVectorStore } from "@/lib/rag/vector";
@@ -29,8 +40,14 @@ const UploadSchema = z.object({
     .refine((file) => file.size <= 50 * 1024 * 1024, {
       message: "File size should be less than 50MB",
     })
-    .refine((file) => isSupportedRagFileType(file.type), {
-      message: "Supported types: pdf, xls, xlsx, txt, md, csv, json",
+    .refine((file) => {
+      if (isPineconeAssistantRagEnabled()) {
+        return isSupportedPineconeAssistantFileType(file.type);
+      }
+
+      return isSupportedRagFileType(file.type);
+    }, {
+      message: getSupportedRagFileTypesMessage(),
     }),
 });
 
@@ -38,6 +55,51 @@ const DeleteSchema = z.object({
   id: z.string().optional(),
   mode: z.enum(["single", "failed", "all"]).default("single"),
 });
+
+async function syncPineconeDocumentStatus(document: {
+  id: string;
+  ragProvider: string;
+  pineconeAssistantFileId: string | null;
+  status: string;
+}) {
+  if (
+    document.ragProvider !== "pinecone-assistant" ||
+    !document.pineconeAssistantFileId ||
+    (document.status !== "queued" && document.status !== "processing")
+  ) {
+    return null;
+  }
+
+  try {
+    const file = await getPineconeAssistantFile({
+      fileId: document.pineconeAssistantFileId,
+    });
+    const mapped = mapPineconeFileStatus(file.status);
+    await updateRagDocumentById({
+      id: document.id,
+      status: mapped.status,
+      error: file.errorMessage ?? null,
+      errorCode: mapped.errorCode,
+      readyAt: mapped.status === "ready" ? new Date() : undefined,
+      failedAt: mapped.status === "failed" ? new Date() : undefined,
+      pineconeAssistantFileStatus: file.status,
+      pineconeAssistantFileMetadata: file.metadata ?? null,
+      pineconeSyncedAt: new Date(),
+    });
+    return await getRagDocumentById({ id: document.id });
+  } catch (error) {
+    await updateRagDocumentById({
+      id: document.id,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Failed to sync Pinecone Assistant status",
+      errorCode: "pinecone_file_status_failed",
+      pineconeSyncedAt: new Date(),
+    }).catch(() => null);
+    return null;
+  }
+}
 
 export async function GET() {
   if (isLocalUiOnlyMode) {
@@ -52,6 +114,26 @@ export async function GET() {
 
   try {
     const documents = await getRagDocumentsByUserId({ userId: session.user.id });
+    if (isPineconeAssistantRagEnabled()) {
+      const synced = await Promise.all(
+        documents.slice(0, 10).map((document) => syncPineconeDocumentStatus(document))
+      );
+      const syncedById = new Map(
+        synced
+          .filter((document) => Boolean(document))
+          .map((document) => [document?.id, document])
+      );
+
+      return Response.json(
+        {
+          documents: documents.map(
+            (document) => syncedById.get(document.id) ?? document
+          ),
+        },
+        { status: 200 }
+      );
+    }
+
     return Response.json({ documents }, { status: 200 });
   } catch (error) {
     const cause = error instanceof Error ? error.message : "Unknown error";
@@ -133,6 +215,12 @@ export async function POST(request: Request) {
       queuedAt: new Date(),
       attempts: 0,
       chunkCount: 0,
+      ragProvider: isPineconeAssistantRagEnabled()
+        ? "pinecone-assistant"
+        : "legacy-custom",
+      embeddingModel: isPineconeAssistantRagEnabled()
+        ? "pinecone-assistant"
+        : undefined,
       error: null,
       errorCode: null,
       userId: session.user.id,
@@ -152,6 +240,73 @@ export async function POST(request: Request) {
       error: null,
       errorCode: null,
     });
+
+    if (isPineconeAssistantRagEnabled()) {
+      const uploaded = await uploadFileToPineconeAssistant({
+        file: uploadedFile,
+        userId: session.user.id,
+        ragDocumentId,
+        checksum,
+      });
+      const mappedStatus = mapPineconeFileStatus(uploaded.status);
+
+      await updateRagDocumentById({
+        id: ragDocumentId,
+        status: mappedStatus.status,
+        error: uploaded.errorMessage ?? null,
+        errorCode: mappedStatus.errorCode,
+        processingStartedAt: new Date(),
+        readyAt: mappedStatus.status === "ready" ? new Date() : undefined,
+        failedAt: mappedStatus.status === "failed" ? new Date() : undefined,
+        pineconeAssistantName: process.env.PINECONE_ASSISTANT_NAME?.trim() ?? null,
+        pineconeAssistantFileId: uploaded.id,
+        pineconeAssistantFileStatus: uploaded.status,
+        pineconeAssistantFileMetadata: uploaded.metadata ?? null,
+        pineconeUploadedAt: new Date(),
+        pineconeSyncedAt: new Date(),
+      });
+
+      const ragDocument = await getRagDocumentById({ id: ragDocumentId });
+
+      return Response.json(
+        {
+          document:
+            ragDocument ??
+            ({
+              id: ragDocumentId,
+              documentId: draftDocumentId,
+              title: uploadedFile.name,
+              fileName: uploadedFile.name,
+              mimeType: uploadedFile.type,
+              size: uploadedFile.size,
+              checksum,
+              storagePath,
+              status: mappedStatus.status,
+              error: uploaded.errorMessage ?? null,
+              errorCode: mappedStatus.errorCode,
+              queuedAt: new Date(),
+              processingStartedAt: new Date(),
+              readyAt: null,
+              failedAt: null,
+              attempts: 0,
+              embeddingModel: "pinecone-assistant",
+              chunkCount: 0,
+              ragProvider: "pinecone-assistant",
+              pineconeAssistantName:
+                process.env.PINECONE_ASSISTANT_NAME?.trim() ?? null,
+              pineconeAssistantFileId: uploaded.id,
+              pineconeAssistantFileStatus: uploaded.status,
+              pineconeAssistantFileMetadata: uploaded.metadata ?? null,
+              pineconeUploadedAt: new Date(),
+              pineconeSyncedAt: new Date(),
+              userId: session.user.id,
+              createdAt: new Date(),
+              updatedAt: new Date(),
+            } as const),
+        },
+        { status: 201 }
+      );
+    }
 
     const queued = await enqueueRagIngestJob({
       jobId: generateUUID(),
@@ -224,6 +379,13 @@ export async function POST(request: Request) {
               process.env.OPENAI_EMBEDDING_MODEL?.trim() ??
               "text-embedding-3-small",
             chunkCount: 0,
+            ragProvider: "legacy-custom",
+            pineconeAssistantName: null,
+            pineconeAssistantFileId: null,
+            pineconeAssistantFileStatus: null,
+            pineconeAssistantFileMetadata: null,
+            pineconeUploadedAt: null,
+            pineconeSyncedAt: null,
             userId: session.user.id,
             createdAt: new Date(),
             updatedAt: new Date(),
@@ -235,7 +397,13 @@ export async function POST(request: Request) {
     const cause =
       error instanceof Error ? error.message : "Failed to process request";
     const isValidationError = cause.includes("readable text") || cause.includes("chunk");
-    const code = isValidationError ? "extract_failed" : "index_failed";
+    const isPineconeError =
+      cause.includes("Pinecone") || cause.includes("pinecone");
+    const code = isValidationError
+      ? "extract_failed"
+      : isPineconeError
+        ? "pinecone_file_upload_failed"
+        : "index_failed";
 
     if (ragDocumentId) {
       await updateRagDocumentById({
@@ -295,13 +463,22 @@ export async function DELETE(request: Request) {
     let deletedCount = 0;
 
     for (const document of selected) {
-      try {
-        await deleteDocumentChunksFromVectorStore({
-          userId: document.userId,
-          documentId: document.documentId,
-        });
-      } catch {
-        // Continue best-effort cleanup for Firestore/Storage even if vector delete fails.
+      if (
+        document.ragProvider === "pinecone-assistant" &&
+        document.pineconeAssistantFileId
+      ) {
+        await deletePineconeAssistantFile({
+          fileId: document.pineconeAssistantFileId,
+        }).catch(() => null);
+      } else {
+        try {
+          await deleteDocumentChunksFromVectorStore({
+            userId: document.userId,
+            documentId: document.documentId,
+          });
+        } catch {
+          // Continue best-effort cleanup for Firestore/Storage even if vector delete fails.
+        }
       }
 
       if (document.storagePath) {

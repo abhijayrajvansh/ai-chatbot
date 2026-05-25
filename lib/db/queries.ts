@@ -211,6 +211,33 @@ function mapRagDocument(snapshot: DocumentSnapshot<DocumentData>): RagDocument {
     embeddingModel:
       String(data.embeddingModel ?? process.env.OPENAI_EMBEDDING_MODEL ?? ""),
     chunkCount: Number(data.chunkCount ?? 0),
+    ragProvider:
+      data.ragProvider === "pinecone-assistant"
+        ? "pinecone-assistant"
+        : "legacy-custom",
+    pineconeAssistantName:
+      typeof data.pineconeAssistantName === "string"
+        ? data.pineconeAssistantName
+        : null,
+    pineconeAssistantFileId:
+      typeof data.pineconeAssistantFileId === "string"
+        ? data.pineconeAssistantFileId
+        : null,
+    pineconeAssistantFileStatus:
+      typeof data.pineconeAssistantFileStatus === "string"
+        ? data.pineconeAssistantFileStatus
+        : null,
+    pineconeAssistantFileMetadata:
+      data.pineconeAssistantFileMetadata &&
+      typeof data.pineconeAssistantFileMetadata === "object"
+        ? (data.pineconeAssistantFileMetadata as Record<string, unknown>)
+        : null,
+    pineconeUploadedAt: data.pineconeUploadedAt
+      ? toDate(data.pineconeUploadedAt)
+      : null,
+    pineconeSyncedAt: data.pineconeSyncedAt
+      ? toDate(data.pineconeSyncedAt)
+      : null,
     userId: String(data.userId ?? ""),
     createdAt: toDate(data.createdAt),
     updatedAt: toDate(data.updatedAt),
@@ -1060,6 +1087,13 @@ export async function saveRagDocument({
   attempts,
   embeddingModel,
   chunkCount,
+  ragProvider,
+  pineconeAssistantName,
+  pineconeAssistantFileId,
+  pineconeAssistantFileStatus,
+  pineconeAssistantFileMetadata,
+  pineconeUploadedAt,
+  pineconeSyncedAt,
   userId,
 }: {
   id?: string;
@@ -1080,6 +1114,13 @@ export async function saveRagDocument({
   attempts?: number;
   embeddingModel?: string;
   chunkCount: number;
+  ragProvider?: RagDocument["ragProvider"];
+  pineconeAssistantName?: string | null;
+  pineconeAssistantFileId?: string | null;
+  pineconeAssistantFileStatus?: string | null;
+  pineconeAssistantFileMetadata?: Record<string, unknown> | null;
+  pineconeUploadedAt?: Date | null;
+  pineconeSyncedAt?: Date | null;
   userId: string;
 }) {
   try {
@@ -1109,6 +1150,13 @@ export async function saveRagDocument({
         process.env.OPENAI_EMBEDDING_MODEL?.trim() ??
         "text-embedding-3-small",
       chunkCount,
+      ragProvider: ragProvider ?? "legacy-custom",
+      pineconeAssistantName: pineconeAssistantName ?? null,
+      pineconeAssistantFileId: pineconeAssistantFileId ?? null,
+      pineconeAssistantFileStatus: pineconeAssistantFileStatus ?? null,
+      pineconeAssistantFileMetadata: pineconeAssistantFileMetadata ?? null,
+      pineconeUploadedAt: pineconeUploadedAt ?? null,
+      pineconeSyncedAt: pineconeSyncedAt ?? null,
       userId,
       createdAt,
       updatedAt,
@@ -1165,6 +1213,12 @@ export async function updateRagDocumentById({
   readyAt,
   failedAt,
   attempts,
+  pineconeAssistantName,
+  pineconeAssistantFileId,
+  pineconeAssistantFileStatus,
+  pineconeAssistantFileMetadata,
+  pineconeUploadedAt,
+  pineconeSyncedAt,
 }: {
   id: string;
   documentId?: string;
@@ -1178,6 +1232,12 @@ export async function updateRagDocumentById({
   readyAt?: Date | null;
   failedAt?: Date | null;
   attempts?: number;
+  pineconeAssistantName?: string | null;
+  pineconeAssistantFileId?: string | null;
+  pineconeAssistantFileStatus?: string | null;
+  pineconeAssistantFileMetadata?: Record<string, unknown> | null;
+  pineconeUploadedAt?: Date | null;
+  pineconeSyncedAt?: Date | null;
 }) {
   try {
     const patch: Record<string, unknown> = {
@@ -1216,6 +1276,24 @@ export async function updateRagDocumentById({
     }
     if (attempts !== undefined) {
       patch.attempts = attempts;
+    }
+    if (pineconeAssistantName !== undefined) {
+      patch.pineconeAssistantName = pineconeAssistantName;
+    }
+    if (pineconeAssistantFileId !== undefined) {
+      patch.pineconeAssistantFileId = pineconeAssistantFileId;
+    }
+    if (pineconeAssistantFileStatus !== undefined) {
+      patch.pineconeAssistantFileStatus = pineconeAssistantFileStatus;
+    }
+    if (pineconeAssistantFileMetadata !== undefined) {
+      patch.pineconeAssistantFileMetadata = pineconeAssistantFileMetadata;
+    }
+    if (pineconeUploadedAt !== undefined) {
+      patch.pineconeUploadedAt = pineconeUploadedAt;
+    }
+    if (pineconeSyncedAt !== undefined) {
+      patch.pineconeSyncedAt = pineconeSyncedAt;
     }
 
     await firestore().collection(RAG_DOCUMENTS).doc(id).set(patch, {

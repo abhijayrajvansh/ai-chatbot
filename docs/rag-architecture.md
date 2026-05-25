@@ -2,6 +2,8 @@
 
 This document describes the RAG architecture currently implemented in this repository.
 
+Current production target: set `RAG_PROVIDER=pinecone-assistant` to use Pinecone Assistant for managed document parsing, indexing, retrieval, and document-grounded chat. The legacy custom pipeline remains available with `RAG_PROVIDER=legacy-custom`.
+
 ## Scope
 
 - Chat API orchestration: `app/(chat)/api/chat/route.ts`

@@ -67,9 +67,23 @@ The app activates whichever model providers are available in env and uses LangCh
 
 ## Upstash Vector (RAG Embeddings)
 
-To enable vector-based retrieval for uploaded RAG documents, configure:
+To enable Pinecone Assistant managed RAG for uploaded documents, configure:
 
 ```env
+RAG_PROVIDER=pinecone-assistant
+PINECONE_API_KEY=
+PINECONE_ASSISTANT_NAME=
+PINECONE_ASSISTANT_HOST=
+PINECONE_ASSISTANT_API_VERSION=2025-04
+PINECONE_ASSISTANT_MODEL=gpt-4o
+```
+
+Create the assistant in Pinecone first, then copy the assistant name and host into the env values.
+
+For the legacy custom RAG path, configure:
+
+```env
+RAG_PROVIDER=legacy-custom
 UPSTASH_VECTOR_REST_URL=
 UPSTASH_VECTOR_REST_TOKEN=
 OPENAI_EMBEDDING_MODEL=text-embedding-3-small
