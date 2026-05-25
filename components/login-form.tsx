@@ -11,9 +11,6 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { cn } from "@/lib/utils";
 
-const DEFAULT_EMAIL = "guest@brackets.agency";
-const DEFAULT_PASSWORD = "password";
-
 export function LoginForm({
   className,
   ...props
@@ -21,7 +18,7 @@ export function LoginForm({
   const router = useRouter();
   const searchParams = useSearchParams();
   const redirectUrl = searchParams.get("redirectUrl") || "/";
-  const [email, setEmail] = useState(DEFAULT_EMAIL);
+  const [email, setEmail] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [state, formAction, isPending] = useActionState<
     LoginActionState,
@@ -79,7 +76,6 @@ export function LoginForm({
             <Input
               autoComplete="current-password"
               className="pr-10"
-              defaultValue={DEFAULT_PASSWORD}
               id="password"
               name="password"
               required
